@@ -1,0 +1,13 @@
+# Vercel deploy ignores
+.env
+.env.local
+back/.env
+node_modules
+back/node_modules
+out/
+cache/
+/tmp/
+*.log
+.foundry/
+back/out/
+back/cache/

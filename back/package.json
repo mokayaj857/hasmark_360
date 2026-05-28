@@ -1,0 +1,29 @@
+{
+  "name": "hashmark-backend",
+  "version": "1.0.0",
+  "description": "Hashmark / Era backend — video hashing, authentication and on-chain verification",
+  "type": "commonjs",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "restart": "fuser -k 4000/tcp 2>/dev/null; sleep 1; node server.js",
+    "dev": "node --watch server.js",
+    "node:local": "anvil --chain-id 1337 --allow-origin '*'",
+    "deploy:local": "node scripts/deploy.js local",
+    "deploy:sepolia": "node scripts/deploy.js sepolia",
+    "deploy:base-sepolia": "node scripts/deploy.js base-sepolia",
+    "deploy:polkavm": "node scripts/deploy.js polkavm",
+    "compile": "forge build",
+    "abi:sync": "node -e \"const f=require('fs'),p=require('path');const a=JSON.parse(f.readFileSync('out/Hashmark.sol/Hashmark.json')).abi;const s=JSON.stringify(a,null,2);f.writeFileSync('abi/Hashmark.json',s);f.writeFileSync('../src/abi/Hashmark.json',s);console.log('ABI synced');\""
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "ethers": "^6.13.4",
+    "express": "^4.19.2",
+    "express-rate-limit": "^7.3.1",
+    "multer": "^1.4.5-lts.1",
+    "pdfkit": "^0.17.2",
+    "qrcode": "^1.5.4"
+  }
+}
