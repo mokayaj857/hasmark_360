@@ -148,6 +148,46 @@ function createHttpError(status, message) {
   return err;
 }
 
+function normalizeCountryKey(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]/g, "");
+}
+
+function resolveCountryInput(input, refCountries) {
+  const trimmed = String(input || "").trim();
+  if (!trimmed) {
+    throw createHttpError(400, "Country is required.");
+  }
+
+  const upper = trimmed.toUpperCase();
+  const list = Array.isArray(refCountries) ? refCountries : [];
+  const byCode = list.find((entry) => String(entry?.code || "").toUpperCase() === upper);
+  if (byCode) {
+    return { code: upper, name: byCode.name || upper };
+  }
+
+  const normalized = normalizeCountryKey(trimmed);
+  if (normalized) {
+    const byName = list.find((entry) => normalizeCountryKey(entry?.name || "") === normalized);
+    if (byName) {
+      return {
+        code: String(byName.code || "").toUpperCase(),
+        name: byName.name || String(byName.code || "").toUpperCase(),
+      };
+    }
+  }
+
+  if (/^[A-Za-z0-9._-]+$/.test(trimmed)) {
+    return { code: upper, name: trimmed };
+  }
+
+  throw createHttpError(404, "Country not found for this indicator. Use ISO3 code or full country name.");
+}
+
 async function resolveData360Indicator(value) {
   const normalized = String(value || "").trim();
   const direct = parseData360IndicatorId(normalized);
@@ -200,15 +240,12 @@ async function buildData360Passport({ indicator, country, date, limit, database,
   }
 
   const indicatorInput = indicator.trim();
-  const countryId = country.trim().toUpperCase();
+  const countryInput = country.trim();
   const dateRange = typeof date === "string" ? date.trim() : "";
   const databaseInput = typeof database === "string" ? database.trim().toUpperCase() : "";
 
   if (!/^[A-Za-z0-9._-]+$/.test(indicatorInput)) {
     throw createHttpError(400, "Indicator contains invalid characters.");
-  }
-  if (!/^[A-Za-z0-9;,_-]+$/.test(countryId)) {
-    throw createHttpError(400, "Country contains invalid characters.");
   }
   if (databaseInput && !/^[A-Za-z0-9_]+$/.test(databaseInput)) {
     throw createHttpError(400, "Database contains invalid characters.");
@@ -238,8 +275,9 @@ async function buildData360Passport({ indicator, country, date, limit, database,
 
   const perPage = Math.min(Math.max(Number(limit) || 12, 1), 100);
   const refCountries = Array.isArray(resolved.refCountries) ? resolved.refCountries : [];
-  const countryMeta = refCountries.find((entry) => String(entry?.code || "").toUpperCase() === countryId);
-  const countryName = countryMeta?.name || "";
+  const resolvedCountry = resolveCountryInput(countryInput, refCountries);
+  const countryId = resolvedCountry.code;
+  const countryName = resolvedCountry.name;
 
   const fetchTop = Math.min(Math.max(Math.max(perPage, 120), 1), 1000);
   const params = {

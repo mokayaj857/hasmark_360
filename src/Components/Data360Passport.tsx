@@ -2,29 +2,47 @@ import { useState, useEffect, useCallback } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { ethers } from "ethers";
 import ABI from "../abi/Hashmark.json";
-import { createData360Passport, verifyData360Passport, getInfo, type Data360Passport, type Data360VerifyResponse, type Data360VerifyOptions } from "../api";
+import { createData360Passport, verifyData360Passport, getInfo, verifyHash, type Data360Passport, type Data360VerifyResponse, type Data360VerifyOptions, type VerifyResult } from "../api";
 import { useWallet } from "../hooks/useWallet";
+import { buildChartDataUrl, buildChartSvg, buildFactHash, buildSummary, normalizeSeries, type FactPayload } from "../utils/demoPassport";
 
 const _raw_addr = (import.meta.env.VITE_CONTRACT_ADDRESS as string) || "";
 const ENV_CONTRACT_ADDRESS = (_raw_addr.match(/0x[0-9a-fA-F]{40}/) || [""])[0];
 
 type Stage = "idle" | "generating" | "verifying" | "anchoring" | "done" | "error";
 
+const DEMO = {
+  question: "Show youth unemployment trends in Kenya.",
+  indicator: "WB_WDI_SL_UEM_1524_NE_ZS",
+  country: "Kenya",
+  date: "2012:2022",
+  limit: 12,
+};
+
 export default function Data360Passport() {
   const [searchParams] = useSearchParams();
   const wallet = useWallet();
 
   const [contractAddress, setContractAddress] = useState(ENV_CONTRACT_ADDRESS);
-  const [indicator, setIndicator] = useState("WB_HNP_SP_POP_TOTL");
-  const [country, setCountry] = useState("WLD");
-  const [date, setDate] = useState("2015:2023");
-  const [limit, setLimit] = useState(12);
+  const [question, setQuestion] = useState(DEMO.question);
+  const [indicator, setIndicator] = useState(DEMO.indicator);
+  const [country, setCountry] = useState(DEMO.country);
+  const [date, setDate] = useState(DEMO.date);
+  const [limit, setLimit] = useState(DEMO.limit);
 
   const [hashInput, setHashInput] = useState(searchParams.get("hash") ?? "");
   const [passport, setPassport] = useState<Data360Passport | null>(null);
   const [verifyResult, setVerifyResult] = useState<Data360VerifyResponse | null>(null);
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
   const [verifyUrl, setVerifyUrl] = useState<string | null>(null);
+  const [summary, setSummary] = useState<string>("");
+  const [chartDataUrl, setChartDataUrl] = useState<string>("");
+  const [factHash, setFactHash] = useState<string | null>(null);
+  const [factPayload, setFactPayload] = useState<FactPayload | null>(null);
+  const [factProof, setFactProof] = useState<VerifyResult | null>(null);
+  const [tamperResult, setTamperResult] = useState<{ status: "idle" | "match" | "mismatch" | "error"; message?: string }>(
+    { status: "idle" },
+  );
   const [anchorTx, setAnchorTx] = useState<{
     txHash: string;
     blockNumber: number;
@@ -48,6 +66,12 @@ export default function Data360Passport() {
     setStage("idle");
     setVerifyResult(null);
     setAnchorTx(null);
+    setSummary("");
+    setChartDataUrl("");
+    setFactHash(null);
+    setFactPayload(null);
+    setFactProof(null);
+    setTamperResult({ status: "idle" });
   };
 
   const formatError = (err: unknown) => {
@@ -58,15 +82,65 @@ export default function Data360Passport() {
     return message;
   };
 
-  const handleGenerate = async () => {
+  const loadFactProof = useCallback(async (hash: string) => {
+    try {
+      const proof = await verifyHash(hash);
+      setFactProof(proof);
+    } catch {
+      setFactProof(null);
+    }
+  }, []);
+
+  const buildDemoAssets = useCallback(async (passport: Data360Passport) => {
+    const normalized = normalizeSeries(passport.data360.series);
+    const countryLabel = passport.data360.country.name || passport.data360.country.id;
+    const summaryText = buildSummary(normalized, countryLabel);
+    const chartTitle = `Youth unemployment in ${countryLabel} (ages 15-24)`;
+    const chartSvgMarkup = buildChartSvg(normalized, chartTitle);
+    const chartUrl = buildChartDataUrl(chartSvgMarkup);
+    const { payload, hash } = await buildFactHash({
+      issuedAt: passport.issuedAt,
+      dataHash: passport.hash,
+      query: passport.data360.query,
+      summary: summaryText,
+      chartDataUrl: chartUrl,
+    });
+
+    setSummary(summaryText);
+    setChartDataUrl(chartUrl);
+    setFactPayload(payload);
+    setFactHash(hash);
+    await loadFactProof(hash);
+  }, [loadFactProof]);
+
+  const handleAskQuestion = () => {
+    handleGenerate({
+      indicator: DEMO.indicator,
+      country: DEMO.country,
+      date: DEMO.date,
+      limit: DEMO.limit,
+    });
+  };
+
+  const handleGenerate = async (override?: { indicator: string; country: string; date?: string; limit?: number }) => {
     resetStatus();
     setStage("generating");
     try {
+      const nextIndicator = override?.indicator ?? indicator.trim();
+      const nextCountry = override?.country ?? country.trim();
+      const nextDate = override?.date ?? date.trim();
+      const nextLimit = override?.limit ?? limit;
+      if (override) {
+        setIndicator(nextIndicator);
+        setCountry(nextCountry);
+        setDate(nextDate);
+        setLimit(nextLimit);
+      }
       const response = await createData360Passport({
-        indicator: indicator.trim(),
-        country: country.trim(),
-        date: date.trim() || undefined,
-        limit: Number.isFinite(Number(limit)) ? Number(limit) : undefined,
+        indicator: nextIndicator,
+        country: nextCountry,
+        date: nextDate || undefined,
+        limit: Number.isFinite(Number(nextLimit)) ? Number(nextLimit) : undefined,
       });
       setPassport(response.passport);
       setHashInput(response.hash);
@@ -80,6 +154,7 @@ export default function Data360Passport() {
         verifyUrl: response.verifyUrl,
         qrDataUrl: response.qrDataUrl,
       });
+      await buildDemoAssets(response.passport);
       setStage("done");
     } catch (err: unknown) {
       setError(formatError(err));
@@ -98,12 +173,19 @@ export default function Data360Passport() {
       setVerifyResult(result);
       setQrDataUrl(result.qrDataUrl);
       setVerifyUrl(result.verifyUrl);
+      if (result.passport?.data360?.query) {
+        setIndicator(result.passport.data360.query.indicator);
+        setCountry(result.passport.data360.country.name || result.passport.data360.query.country);
+        setDate(result.passport.data360.query.date ?? "");
+        setLimit(result.passport.data360.query.limit);
+      }
+      await buildDemoAssets(result.passport);
       setStage("done");
     } catch (err: unknown) {
       setError(formatError(err));
       setStage("error");
     }
-  }, [hashInput]);
+  }, [hashInput, buildDemoAssets]);
 
   useEffect(() => {
     const paramHash = searchParams.get("hash");
@@ -133,9 +215,9 @@ export default function Data360Passport() {
   }, []);
 
   const handleAnchor = async () => {
-    if (!passport) return;
+    if (!passport || !factHash) return;
     if (!wallet.signer) {
-      setError("Connect your MetaMask wallet to anchor this passport on-chain.");
+      setError("Connect your MetaMask wallet to publish this fact on-chain.");
       setStage("error");
       return;
     }
@@ -149,7 +231,7 @@ export default function Data360Passport() {
     setStage("anchoring");
     try {
       const contract = new ethers.Contract(contractAddress, ABI, wallet.signer);
-      const tx = await contract.authenticateVideo(passport.hash);
+      const tx = await contract.authenticateVideo(factHash);
       const receipt = await tx.wait();
       const block = await wallet.provider!.getBlock(receipt.blockNumber);
       const timestamp = block?.timestamp ?? Math.floor(Date.now() / 1000);
@@ -160,13 +242,13 @@ export default function Data360Passport() {
         chainName: wallet.chainName,
         chainId: wallet.chainId ?? 0,
       });
-      await handleVerify(passport.hash);
+      await loadFactProof(factHash);
       setStage("done");
     } catch (err: unknown) {
       const msg = (err as { reason?: string; message?: string }).reason
         || (err as Error).message;
       if (msg?.includes("Already authenticated")) {
-        setError("This passport hash is already anchored on-chain.");
+        setError("This fact hash is already anchored on-chain.");
       } else if ((err as { code?: number }).code === 4001 || msg?.includes("user rejected")) {
         setError("Transaction rejected in MetaMask.");
       } else {
@@ -176,21 +258,37 @@ export default function Data360Passport() {
     }
   };
 
-  const downloadPassport = () => {
-    if (!passport) return;
-    const blob = new Blob([JSON.stringify(passport, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `data360-passport-${passport.hash.slice(0, 12)}.json`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+  const fileToDataUrl = (file: File) => new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(new Error("Failed to read file."));
+    reader.readAsDataURL(file);
+  });
+
+  const handleTamperUpload = async (file: File | null) => {
+    if (!file || !factPayload || !factHash) return;
+    try {
+      const dataUrl = await fileToDataUrl(file);
+      const { hash } = await buildFactHash({
+        issuedAt: factPayload.issuedAt,
+        dataHash: factPayload.dataHash,
+        query: factPayload.query,
+        summary: factPayload.summary,
+        chartDataUrl: dataUrl,
+      });
+      setTamperResult({
+        status: hash === factHash ? "match" : "mismatch",
+        message: hash === factHash ? "CONTENT MATCHED" : "CONTENT TAMPERED",
+      });
+    } catch (err: unknown) {
+      setTamperResult({
+        status: "error",
+        message: (err as Error).message || "Tamper check failed.",
+      });
+    }
   };
 
   const busy = stage === "generating" || stage === "verifying" || stage === "anchoring";
-  const seriesPreview = passport?.data360.series.slice(0, 6) ?? [];
 
   return (
     <div className="section" style={{ minHeight: "100vh" }}>
@@ -200,189 +298,168 @@ export default function Data360Passport() {
         </Link>
 
         <div className="section-header">
-          <p className="section-label">Digital Passport</p>
-          <h2 className="section-title">Data360 Facts Passport</h2>
+          <p className="section-label">Hashmark Demo</p>
+          <h2 className="section-title">Verified Data360 Insight</h2>
           <p className="section-desc">
-            Generate a portable, shareable proof for World Bank Data360 statistics. Every passport
-            includes a cryptographic hash, a verification QR, and optional on-chain anchoring.
+            How do we know this chart and AI-generated report were not manipulated?
           </p>
         </div>
 
         <div className="tech-card" style={{ marginBottom: 20 }}>
-          <h3 style={{ marginBottom: 12, fontSize: 15 }}>1 · Select Data360 indicator</h3>
-          <div style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))" }}>
-            <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              <span style={{ fontSize: 11, opacity: 0.6 }}>Indicator ID (Data360)</span>
-              <input
-                type="text"
-                value={indicator}
-                onChange={e => setIndicator(e.target.value)}
-                placeholder="WB_HNP_SP_POP_TOTL"
-                style={{ padding: "10px 12px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--surface)", color: "var(--text)" }}
-              />
-            </label>
-            <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              <span style={{ fontSize: 11, opacity: 0.6 }}>Country / Region</span>
-              <input
-                type="text"
-                value={country}
-                onChange={e => setCountry(e.target.value)}
-                placeholder="WLD"
-                style={{ padding: "10px 12px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--surface)", color: "var(--text)" }}
-              />
-            </label>
-            <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              <span style={{ fontSize: 11, opacity: 0.6 }}>Date Range</span>
-              <input
-                type="text"
-                value={date}
-                onChange={e => setDate(e.target.value)}
-                placeholder="2015:2023"
-                style={{ padding: "10px 12px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--surface)", color: "var(--text)" }}
-              />
-            </label>
-            <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              <span style={{ fontSize: 11, opacity: 0.6 }}>Max points</span>
-              <input
-                type="number"
-                min={1}
-                max={100}
-                value={limit}
-                onChange={e => setLimit(Number(e.target.value))}
-                style={{ padding: "10px 12px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--surface)", color: "var(--text)" }}
-              />
-            </label>
-          </div>
-          <button className="btn btn-primary" style={{ marginTop: 16, width: "100%" }} onClick={handleGenerate} disabled={busy}>
-            {stage === "generating" ? "Generating passport…" : "Generate Passport"}
-          </button>
-        </div>
-
-        <div className="tech-card" style={{ marginBottom: 20 }}>
-          <h3 style={{ marginBottom: 12, fontSize: 15 }}>2 · Verify an existing passport</h3>
-          <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+          <h3 style={{ marginBottom: 12, fontSize: 15 }}>1 · Ask a question</h3>
+          <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <span style={{ fontSize: 11, opacity: 0.6 }}>Question</span>
             <input
               type="text"
-              value={hashInput}
-              onChange={e => setHashInput(e.target.value)}
-              placeholder="Passport hash (sha256)"
-              style={{ flex: 1, minWidth: 240, padding: "10px 12px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--surface)", color: "var(--text)" }}
+              value={question}
+              onChange={(e) => setQuestion(e.target.value)}
+              placeholder={DEMO.question}
+              style={{ padding: "10px 12px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--surface)", color: "var(--text)" }}
             />
-            <button className="btn btn-secondary" onClick={() => handleVerify()} disabled={busy}>
-              {stage === "verifying" ? "Verifying…" : "Verify Passport"}
-            </button>
-          </div>
-          <p style={{ fontSize: 12, opacity: 0.55, marginTop: 10 }}>
-            Share the verification link or QR from the generated passport to validate it anywhere.
+          </label>
+          <label style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 12 }}>
+            <span style={{ fontSize: 11, opacity: 0.6 }}>Country (name or ISO3)</span>
+            <input
+              type="text"
+              value={country}
+              onChange={(e) => setCountry(e.target.value)}
+              placeholder="Kenya"
+              style={{ padding: "10px 12px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--surface)", color: "var(--text)" }}
+            />
+          </label>
+          <button className="btn btn-primary" style={{ marginTop: 16, width: "100%" }} onClick={handleAskQuestion} disabled={busy}>
+            {stage === "generating" ? "Fetching data…" : "Fetch official data"}
+          </button>
+          <p style={{ fontSize: 12, opacity: 0.6, marginTop: 10 }}>
+            Using World Bank Data360 · Indicator {indicator} · {country} · {date}
           </p>
         </div>
 
-        {(passport || verifyResult) && (
+        {passport && (
           <div className="tech-card" style={{ marginBottom: 20 }}>
-            <h3 style={{ marginBottom: 12, fontSize: 15 }}>3 · Passport summary</h3>
-            {passport && (
-              <div style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fit,minmax(240px,1fr))" }}>
-                <div>
-                  <p style={{ fontSize: 11, opacity: 0.6, marginBottom: 6 }}>Indicator</p>
-                  <div style={{ fontSize: 14, fontWeight: 600 }}>{passport.data360.indicator.name || passport.data360.indicator.id}</div>
-                  <div style={{ fontSize: 12, opacity: 0.6 }}>{passport.data360.indicator.id}</div>
-                </div>
-                <div>
-                  <p style={{ fontSize: 11, opacity: 0.6, marginBottom: 6 }}>Country / Region</p>
-                  <div style={{ fontSize: 14, fontWeight: 600 }}>{passport.data360.country.name || passport.data360.country.id}</div>
-                  <div style={{ fontSize: 12, opacity: 0.6 }}>{passport.data360.country.iso3 || passport.data360.country.id}</div>
-                </div>
-                <div>
-                  <p style={{ fontSize: 11, opacity: 0.6, marginBottom: 6 }}>Issued</p>
-                  <div style={{ fontSize: 13 }}>{new Date(passport.issuedAt).toLocaleString()}</div>
-                </div>
+            <h3 style={{ marginBottom: 12, fontSize: 15 }}>2 · Official data + AI summary</h3>
+            {chartDataUrl && (
+              <div style={{ background: "#0f1117", borderRadius: 16, padding: 12 }}>
+                <img src={chartDataUrl} alt="Youth unemployment chart" style={{ width: "100%", borderRadius: 12 }} />
               </div>
             )}
-
-            {verifyResult && (
-              <div style={{ marginTop: 16, display: "flex", flexDirection: "column", gap: 8 }}>
-                <div style={{ fontSize: 12, fontWeight: 600, color: verifyResult.valid ? "#4ade80" : "#f87171" }}>
-                  {verifyResult.valid ? "✅ Passport hash verified" : "⚠️ Passport hash mismatch"}
-                </div>
-                {verifyResult.chain && (
-                  <div style={{ fontSize: 12, opacity: 0.7 }}>
-                    {verifyResult.chain.authenticated
-                      ? `On-chain: anchored by ${verifyResult.chain.creator} at ${new Date((verifyResult.chain.timestamp || 0) * 1000).toLocaleString()}`
-                      : "On-chain: not yet anchored"}
-                  </div>
-                )}
-              </div>
-            )}
-
-            {passport && (
-              <div style={{ marginTop: 16, display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fit,minmax(220px,1fr))" }}>
-                <div>
-                  <p style={{ fontSize: 11, opacity: 0.6, marginBottom: 6 }}>Passport Hash</p>
-                  <code style={{ fontSize: 11, wordBreak: "break-all" }}>{passport.hash}</code>
-                  <div style={{ marginTop: 10 }}>
-                    <button className="btn btn-secondary" onClick={downloadPassport}>Download JSON</button>
-                  </div>
-                </div>
-                <div>
-                  <p style={{ fontSize: 11, opacity: 0.6, marginBottom: 6 }}>Verify Link</p>
-                  {verifyUrl ? (
-                    <a href={verifyUrl} style={{ fontSize: 12, wordBreak: "break-all", color: "var(--accent)" }}>
-                      {verifyUrl}
-                    </a>
-                  ) : (
-                    <span style={{ fontSize: 12, opacity: 0.5 }}>—</span>
-                  )}
-                  {qrDataUrl && (
-                    <div style={{ marginTop: 12, width: 140, height: 140, background: "#fff", borderRadius: 12, overflow: "hidden" }}>
-                      <img src={qrDataUrl} alt="Passport QR" style={{ width: "100%", height: "100%", objectFit: "contain" }} />
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-
-        {seriesPreview.length > 0 && (
-          <div className="tech-card" style={{ marginBottom: 20 }}>
-            <h3 style={{ marginBottom: 12, fontSize: 15 }}>4 · Data preview</h3>
-            <div style={{ display: "grid", gap: 10 }}>
-              {seriesPreview.map((point) => (
-                <div key={point.date} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 12, borderBottom: "1px solid var(--border)", paddingBottom: 8 }}>
-                  <span>{point.date}</span>
-                  <span style={{ fontWeight: 600 }}>
-                    {point.value === null ? "—" : point.value.toLocaleString(undefined, { maximumFractionDigits: 3 })}
-                  </span>
-                </div>
-              ))}
+            <div style={{ marginTop: 16 }}>
+              <p style={{ fontSize: 11, opacity: 0.6, marginBottom: 6 }}>AI summary</p>
+              <p style={{ fontSize: 14 }}>{summary || "Generating summary..."}</p>
             </div>
-            <p style={{ fontSize: 11, opacity: 0.55, marginTop: 12 }}>
-              Source: {passport?.data360.dataUrl}
+            <p style={{ fontSize: 12, opacity: 0.6, marginTop: 12 }}>
+              Source:{" "}
+              <a href={passport.data360.dataUrl} target="_blank" rel="noreferrer" style={{ color: "var(--accent)" }}>
+                World Bank Data360
+              </a>
             </p>
           </div>
         )}
 
         {passport && (
           <div className="tech-card" style={{ marginBottom: 20 }}>
-            <h3 style={{ marginBottom: 12, fontSize: 15 }}>5 · Anchor on-chain</h3>
+            <h3 style={{ marginBottom: 12, fontSize: 15 }}>3 · Verify & Publish</h3>
             <p style={{ fontSize: 12, opacity: 0.6, marginBottom: 12 }}>
-              Anchor the passport hash to the Hashmark contract for a permanent source seal.
+              Hash the chart + summary, anchor the proof on-chain, and generate a public verification passport.
             </p>
+            {factHash && (
+              <div style={{ marginBottom: 12 }}>
+                <p style={{ fontSize: 11, opacity: 0.6, marginBottom: 6 }}>Fact hash</p>
+                <code style={{ fontSize: 11, wordBreak: "break-all" }}>{factHash}</code>
+              </div>
+            )}
             {!wallet.address ? (
               <button className="btn btn-secondary" onClick={wallet.connect} disabled={wallet.connecting}>
                 {wallet.connecting ? "Connecting…" : "Connect MetaMask"}
               </button>
             ) : (
               <div style={{ display: "flex", flexWrap: "wrap", gap: 12, alignItems: "center" }}>
-                <button className="btn btn-primary" onClick={handleAnchor} disabled={busy}>
-                  {stage === "anchoring" ? "Anchoring…" : "Anchor Passport Hash"}
+                <button className="btn btn-primary" onClick={handleAnchor} disabled={busy || !factHash}>
+                  {stage === "anchoring" ? "Publishing…" : "Verify & Publish"}
                 </button>
                 <span style={{ fontSize: 12, opacity: 0.6 }}>{wallet.chainName}</span>
               </div>
             )}
             {anchorTx && (
               <div style={{ marginTop: 12, fontSize: 12, opacity: 0.7 }}>
-                Anchored in block {anchorTx.blockNumber} · Tx {anchorTx.txHash.slice(0, 10)}…{anchorTx.txHash.slice(-8)}
+                Timestamped in block {anchorTx.blockNumber} · Tx {anchorTx.txHash.slice(0, 10)}…{anchorTx.txHash.slice(-8)}
+              </div>
+            )}
+
+            <div style={{ marginTop: 16, display: "grid", gap: 10 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: verifyResult?.valid ? "#4ade80" : "#f87171" }}>
+                {verifyResult
+                  ? (verifyResult.valid ? "✅ Verified by Hashmark" : "⚠️ Hash mismatch")
+                  : "—"}
+              </div>
+              <div style={{ fontSize: 12, opacity: 0.7 }}>✅ Source: World Bank Data360</div>
+              <div style={{ fontSize: 12, opacity: 0.7 }}>
+                {factProof?.authenticated
+                  ? `✅ Timestamped on-chain${factProof.timestamp ? ` at ${new Date(factProof.timestamp * 1000).toLocaleString()}` : ""}`
+                  : "⏳ Not yet anchored on-chain"}
+              </div>
+            </div>
+
+            <div style={{ marginTop: 16, display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fit,minmax(220px,1fr))" }}>
+              <div>
+                <p style={{ fontSize: 11, opacity: 0.6, marginBottom: 6 }}>Verify Link</p>
+                {verifyUrl ? (
+                  <a href={verifyUrl} style={{ fontSize: 12, wordBreak: "break-all", color: "var(--accent)" }}>
+                    {verifyUrl}
+                  </a>
+                ) : (
+                  <span style={{ fontSize: 12, opacity: 0.5 }}>—</span>
+                )}
+              </div>
+              {qrDataUrl && (
+                <div>
+                  <p style={{ fontSize: 11, opacity: 0.6, marginBottom: 6 }}>Verification QR</p>
+                  <div style={{ width: 140, height: 140, background: "#fff", borderRadius: 12, overflow: "hidden" }}>
+                    <img src={qrDataUrl} alt="Verification QR" style={{ width: "100%", height: "100%", objectFit: "contain" }} />
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {(verifyResult || factHash) && (
+          <div className="tech-card" style={{ marginBottom: 20 }}>
+            <h3 style={{ marginBottom: 12, fontSize: 15 }}>4 · Public verification</h3>
+            <p style={{ fontSize: 12, opacity: 0.6, marginBottom: 12 }}>
+              Verification page shows the original chart, source dataset, blockchain proof, and status.
+            </p>
+            <div style={{ display: "grid", gap: 10 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: verifyResult?.valid ? "#4ade80" : "#f87171" }}>
+                {verifyResult
+                  ? (verifyResult.valid ? "✅ Passport verified" : "⚠️ Passport hash mismatch")
+                  : "—"}
+              </div>
+              <div style={{ fontSize: 12, opacity: 0.7 }}>
+                {factProof?.authenticated
+                  ? `✅ Blockchain proof found${factProof.timestamp ? ` at ${new Date(factProof.timestamp * 1000).toLocaleString()}` : ""}`
+                  : "⏳ Blockchain proof pending"}
+              </div>
+              <div style={{ fontSize: 12, opacity: 0.7 }}>Data source: World Bank Data360</div>
+            </div>
+          </div>
+        )}
+
+        {factHash && (
+          <div className="tech-card" style={{ marginBottom: 20 }}>
+            <h3 style={{ marginBottom: 12, fontSize: 15 }}>5 · Tampering demo</h3>
+            <p style={{ fontSize: 12, opacity: 0.6, marginBottom: 12 }}>
+              Modify the chart (e.g. change 12% → 4%), then upload it here to prove tampering.
+            </p>
+            <input
+              type="file"
+              accept="image/*"
+              onChange={(e) => handleTamperUpload(e.target.files?.[0] ?? null)}
+              style={{ fontSize: 12 }}
+            />
+            {tamperResult.status !== "idle" && (
+              <div style={{ marginTop: 12, fontSize: 13, fontWeight: 600, color: tamperResult.status === "match" ? "#4ade80" : "#f87171" }}>
+                {tamperResult.message}
               </div>
             )}
           </div>
