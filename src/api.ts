@@ -123,6 +123,7 @@ export interface Data360VerifyOptions {
   country?: string;
   date?: string;
   limit?: number;
+  issuedAt?: string;
 }
 
 async function handleResponse<T>(res: Response): Promise<T> {
@@ -220,6 +221,7 @@ export async function verifyData360Passport(hash: string, options?: Data360Verif
   if (options?.database) params.set("database", options.database);
   if (options?.country) params.set("country", options.country);
   if (options?.date) params.set("date", options.date);
+  if (options?.issuedAt) params.set("issuedAt", options.issuedAt);
   if (typeof options?.limit === "number" && Number.isFinite(options.limit)) {
     params.set("limit", String(options.limit));
   }

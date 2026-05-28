@@ -112,6 +112,7 @@ export default function Data360Passport() {
     const paramCountry = searchParams.get("country");
     const paramDate = searchParams.get("date");
     const paramDatabase = searchParams.get("database");
+    const paramIssuedAt = searchParams.get("issuedAt");
     const limitRaw = searchParams.get("limit");
     const parsedLimit = limitRaw ? Number(limitRaw) : undefined;
     const verifyOptions: Data360VerifyOptions | undefined = (paramIndicator && paramCountry)
@@ -120,6 +121,7 @@ export default function Data360Passport() {
           country: paramCountry,
           date: paramDate || undefined,
           database: paramDatabase || undefined,
+          issuedAt: paramIssuedAt || undefined,
           limit: Number.isFinite(parsedLimit) ? parsedLimit : undefined,
         }
       : undefined;

@@ -66,7 +66,7 @@ Returns **503** if `PRIVATE_KEY` is not set (client must sign via MetaMask).
 }
 → { passport, hash, verifyUrl, qrDataUrl }
 ```
-The `verifyUrl` includes the query parameters so verification can rebuild the passport even on stateless deployments.
+The `verifyUrl` includes the query parameters (including `issuedAt`) so verification can rebuild the passport even on stateless deployments.
 
 ### GET /api/data360/verify/:hash
 ```

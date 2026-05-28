@@ -191,7 +191,7 @@ async function resolveData360Indicator(value) {
   };
 }
 
-async function buildData360Passport({ indicator, country, date, limit, database }) {
+async function buildData360Passport({ indicator, country, date, limit, database, issuedAt }) {
   if (typeof indicator !== "string" || !indicator.trim()) {
     throw createHttpError(400, "Body must include a non-empty 'indicator' string.");
   }
@@ -293,9 +293,18 @@ async function buildData360Passport({ indicator, country, date, limit, database 
   });
 
   const publicUrl = buildData360Url("data360/data", params, false);
+  let issuedAtValue = new Date().toISOString();
+  if (issuedAt) {
+    const parsed = Date.parse(String(issuedAt));
+    if (!Number.isFinite(parsed)) {
+      throw createHttpError(400, "issuedAt must be a valid ISO timestamp.");
+    }
+    issuedAtValue = new Date(parsed).toISOString();
+  }
+
   const payload = {
     version: "data360-passport-v1",
-    issuedAt: new Date().toISOString(),
+    issuedAt: issuedAtValue,
     issuer: "Hashmark Protocol",
     data360: {
       apiBaseUrl: DATA360_BASE_URL,
@@ -329,9 +338,10 @@ async function buildData360Passport({ indicator, country, date, limit, database 
   };
 }
 
-function buildVerifyUrl(frontendUrl, hash, query) {
+function buildVerifyUrl(frontendUrl, hash, query, issuedAt) {
   const url = new URL(`${frontendUrl.replace(/\/$/, "")}/passport`);
   url.searchParams.set("hash", hash);
+  if (issuedAt) url.searchParams.set("issuedAt", issuedAt);
   if (query?.indicator) url.searchParams.set("indicator", query.indicator);
   if (query?.database) url.searchParams.set("database", query.database);
   if (query?.country) url.searchParams.set("country", query.country);
@@ -507,7 +517,7 @@ router.post("/data360/passport", express.json(), async (req, res) => {
     await savePassport(hash, passport);
 
     const frontendUrl = (process.env.FRONTEND_URL || "http://localhost:5173").replace(/\/$/, "");
-    const verifyUrl = buildVerifyUrl(frontendUrl, hash, query);
+    const verifyUrl = buildVerifyUrl(frontendUrl, hash, query, passport.issuedAt);
     const qrDataUrl = await QRCode.toDataURL(verifyUrl, {
       errorCorrectionLevel: "H",
       margin: 4,
@@ -561,8 +571,9 @@ router.get("/data360/verify/:hash", async (req, res) => {
       const date = req.query.date;
       const limit = req.query.limit;
       const database = req.query.database;
+      const issuedAt = req.query.issuedAt;
 
-      if (indicator && country) {
+      if (indicator && country && issuedAt) {
         try {
           const rebuilt = await buildData360Passport({
             indicator,
@@ -570,6 +581,7 @@ router.get("/data360/verify/:hash", async (req, res) => {
             date,
             limit,
             database,
+            issuedAt,
           });
           if (rebuilt.hash === hash) {
             passport = rebuilt.passport;
@@ -603,7 +615,7 @@ router.get("/data360/verify/:hash", async (req, res) => {
     }
 
     const frontendUrl = (process.env.FRONTEND_URL || "http://localhost:5173").replace(/\/$/, "");
-    const verifyUrl = buildVerifyUrl(frontendUrl, hash, payload.data360?.query);
+    const verifyUrl = buildVerifyUrl(frontendUrl, hash, payload.data360?.query, payload.issuedAt);
     const qrDataUrl = await QRCode.toDataURL(verifyUrl, {
       errorCorrectionLevel: "H",
       margin: 4,
