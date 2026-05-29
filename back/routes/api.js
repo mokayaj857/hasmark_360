@@ -192,7 +192,37 @@ async function resolveData360Indicator(value) {
   const normalized = String(value || "").trim();
   const direct = parseData360IndicatorId(normalized);
   if (direct) {
-    return { ...direct, name: "", unit: "", refCountries: [] };
+    const search = await postData360("data360/searchv2", { search: normalized, top: 8 });
+    const results = Array.isArray(search?.value) ? search.value : [];
+    if (!results.length) {
+      return { ...direct, name: "", unit: "", refCountries: [] };
+    }
+
+    const normalizedUpper = normalized.toUpperCase();
+    const match = results.find((item) => {
+      const sd = item?.series_description || {};
+      if (typeof sd.idno === "string" && sd.idno.toUpperCase() === normalizedUpper) return true;
+      const alternates = Array.isArray(sd.alternate_identifiers) ? sd.alternate_identifiers : [];
+      return alternates.some((alt) => String(alt?.identifier || "").toUpperCase() === normalizedUpper);
+    });
+    if (!match) {
+      return { ...direct, name: "", unit: "", refCountries: [] };
+    }
+
+    const sd = match.series_description || {};
+    const indicatorId = (sd.idno || normalized).toUpperCase();
+    const databaseId = sd.database_id || direct.databaseId || parseData360IndicatorId(indicatorId)?.databaseId || "";
+    if (!databaseId) {
+      throw new Error("Data360 database ID is missing for this indicator.");
+    }
+    const refCountries = Array.isArray(sd.ref_country) ? sd.ref_country : [];
+    return {
+      indicatorId,
+      databaseId,
+      name: sd.name || "",
+      unit: sd.measurement_unit || "",
+      refCountries,
+    };
   }
 
   const search = await postData360("data360/searchv2", { search: normalized, top: 8 });

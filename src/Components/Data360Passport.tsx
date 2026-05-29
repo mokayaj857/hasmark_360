@@ -4,7 +4,7 @@ import { ethers } from "ethers";
 import ABI from "../abi/Hashmark.json";
 import { createData360Passport, verifyData360Passport, getInfo, verifyHash, type Data360Passport, type Data360VerifyResponse, type Data360VerifyOptions, type VerifyResult } from "../api";
 import { useWallet } from "../hooks/useWallet";
-import { buildChartDataUrl, buildChartSvg, buildFactHash, buildSummary, normalizeSeries, type FactPayload } from "../utils/demoPassport";
+import { buildChartDataUrl, buildChartSvg, buildFactDNA, buildSummary, normalizeSeries, type FactDNA } from "../utils/demoPassport";
 
 const _raw_addr = (import.meta.env.VITE_CONTRACT_ADDRESS as string) || "";
 const ENV_CONTRACT_ADDRESS = (_raw_addr.match(/0x[0-9a-fA-F]{40}/) || [""])[0];
@@ -17,6 +17,95 @@ const DEMO = {
   country: "Kenya",
   date: "2012:2022",
   limit: 12,
+  category: "Youth unemployment",
+};
+
+const AGENT_IDENTITY = "Hashmark Insight Engine v1";
+
+const QUESTION_ROUTES = [
+  {
+    indicator: "WB_WDI_SL_UEM_1524_NE_ZS",
+    category: "Youth unemployment",
+    keywords: ["youth unemployment", "young unemployment", "youth jobless", "ages 15-24", "youth labor"],
+  },
+  {
+    indicator: "WB_WDI_SL_UEM_TOTL_ZS",
+    category: "Unemployment",
+    keywords: ["unemployment", "jobless", "employment rate", "labor market"],
+  },
+  {
+    indicator: "WB_WDI_SI_POV_DDAY",
+    category: "Extreme poverty",
+    keywords: ["poverty", "extreme poverty", "poverty rate", "income poverty"],
+  },
+  {
+    indicator: "WB_WDI_SG_GEN_PARL_ZS",
+    category: "Gender equality",
+    keywords: ["gender equality", "women in parliament", "gender parity", "women representation"],
+  },
+  {
+    indicator: "WB_WDI_SL_TLF_CACT_FE_ZS",
+    category: "Female labor participation",
+    keywords: ["female labor participation", "women workforce", "female workforce", "women labor"],
+  },
+  {
+    indicator: "WB_WDI_EN_ATM_CO2E_PC",
+    category: "Climate emissions",
+    keywords: ["climate", "co2", "carbon", "emissions", "greenhouse"],
+  },
+  {
+    indicator: "WB_WDI_SH_XPD_CHEX_GD_ZS",
+    category: "Healthcare spending",
+    keywords: ["healthcare spending", "health expenditure", "health spending"],
+  },
+  {
+    indicator: "WB_WDI_SE_SEC_ENRR",
+    category: "Education access",
+    keywords: ["education", "school enrollment", "secondary education", "student enrollment"],
+  },
+  {
+    indicator: "WB_WDI_EG_ELC_ACCS_ZS",
+    category: "Infrastructure access",
+    keywords: ["electricity", "power access", "energy access", "infrastructure"],
+  },
+  {
+    indicator: "WB_WDI_SH_H2O_BASW_ZS",
+    category: "Clean water access",
+    keywords: ["clean water", "drinking water", "water access"],
+  },
+  {
+    indicator: "WB_WDI_NY_GDP_PCAP_CD",
+    category: "Economic output",
+    keywords: ["gdp per capita", "income per person", "economic output", "gdp"],
+  },
+  {
+    indicator: "WB_WDI_SP_DYN_LE00_IN",
+    category: "Healthcare outcomes",
+    keywords: ["life expectancy", "healthcare outcomes", "health outcomes"],
+  },
+];
+
+const resolveQuestionRoute = (input: string) => {
+  const normalized = input.toLowerCase();
+  return QUESTION_ROUTES.find((route) =>
+    route.keywords.some((keyword) => normalized.includes(keyword)),
+  );
+};
+
+const extractDateRange = (input: string) => {
+  const years = Array.from(input.matchAll(/\b(19|20)\d{2}\b/g))
+    .map((match) => Number(match[0]))
+    .filter((year) => Number.isFinite(year));
+  if (!years.length) {
+    const normalized = input.toLowerCase();
+    const currentYear = new Date().getFullYear();
+    if (normalized.includes("last decade")) return `${currentYear - 10}:${currentYear}`;
+    if (normalized.includes("last 5 years")) return `${currentYear - 5}:${currentYear}`;
+    return undefined;
+  }
+  const sorted = Array.from(new Set(years)).sort((a, b) => a - b);
+  if (sorted.length === 1) return `${sorted[0]}`;
+  return `${sorted[0]}:${sorted[sorted.length - 1]}`;
 };
 
 export default function Data360Passport() {
@@ -25,6 +114,7 @@ export default function Data360Passport() {
 
   const [contractAddress, setContractAddress] = useState(ENV_CONTRACT_ADDRESS);
   const [question, setQuestion] = useState(DEMO.question);
+  const [questionCategory, setQuestionCategory] = useState(DEMO.category);
   const [indicator, setIndicator] = useState(DEMO.indicator);
   const [country, setCountry] = useState(DEMO.country);
   const [date, setDate] = useState(DEMO.date);
@@ -38,7 +128,7 @@ export default function Data360Passport() {
   const [summary, setSummary] = useState<string>("");
   const [chartDataUrl, setChartDataUrl] = useState<string>("");
   const [factHash, setFactHash] = useState<string | null>(null);
-  const [factPayload, setFactPayload] = useState<FactPayload | null>(null);
+  const [factPayload, setFactPayload] = useState<FactDNA | null>(null);
   const [factProof, setFactProof] = useState<VerifyResult | null>(null);
   const [tamperResult, setTamperResult] = useState<{ status: "idle" | "match" | "mismatch" | "error"; message?: string }>(
     { status: "idle" },
@@ -91,17 +181,46 @@ export default function Data360Passport() {
     }
   }, []);
 
-  const buildDemoAssets = useCallback(async (passport: Data360Passport) => {
-    const normalized = normalizeSeries(passport.data360.series);
+  const buildDemoAssets = useCallback(async (passport: Data360Passport, request?: { question?: string; category?: string }) => {
+    const normalized = normalizeSeries(passport.data360.series, passport.data360.indicator.unit);
     const countryLabel = passport.data360.country.name || passport.data360.country.id;
-    const summaryText = buildSummary(normalized, countryLabel);
-    const chartTitle = `Youth unemployment in ${countryLabel} (ages 15-24)`;
-    const chartSvgMarkup = buildChartSvg(normalized, chartTitle);
+    const indicatorLabel = passport.data360.indicator.name || passport.data360.indicator.id || passport.data360.query.indicator;
+    const unitLabel = passport.data360.indicator.unit || normalized[0]?.unit;
+    const summaryText = buildSummary(normalized, {
+      countryLabel,
+      indicatorLabel,
+      unitLabel,
+      sourceLabel: "World Bank Data360",
+    });
+    const chartTitle = `${indicatorLabel} · ${countryLabel}`;
+    const chartSvgMarkup = buildChartSvg(normalized, chartTitle, unitLabel);
     const chartUrl = buildChartDataUrl(chartSvgMarkup);
-    const { payload, hash } = await buildFactHash({
+    const requestQuestion = request?.question?.trim() || `Show ${indicatorLabel} in ${countryLabel}.`;
+    const requestCategory = request?.category || indicatorLabel || "Development indicator";
+    const { payload, hash } = await buildFactDNA({
       issuedAt: passport.issuedAt,
       dataHash: passport.hash,
       query: passport.data360.query,
+      request: { question: requestQuestion, category: requestCategory },
+      source: {
+        authority: "World Bank Data360",
+        issuer: passport.issuer,
+        apiBaseUrl: passport.data360.apiBaseUrl,
+        dataUrl: passport.data360.dataUrl,
+        indicator: {
+          id: passport.data360.indicator.id,
+          name: indicatorLabel,
+          unit: passport.data360.indicator.unit,
+        },
+        country: {
+          id: passport.data360.country.id,
+          name: countryLabel,
+          iso3: passport.data360.country.iso3,
+        },
+        period: passport.data360.query.date ?? null,
+      },
+      creator: wallet.address ?? "Anonymous researcher",
+      agent: AGENT_IDENTITY,
       summary: summaryText,
       chartDataUrl: chartUrl,
     });
@@ -111,18 +230,31 @@ export default function Data360Passport() {
     setFactPayload(payload);
     setFactHash(hash);
     await loadFactProof(hash);
-  }, [loadFactProof]);
+  }, [loadFactProof, wallet.address]);
 
   const handleAskQuestion = () => {
+    const route = resolveQuestionRoute(question);
+    const derivedIndicator = route?.indicator ?? (indicator.trim() || DEMO.indicator);
+    const derivedCategory = route?.category ?? "Development indicator";
+    const derivedDate = extractDateRange(question) ?? (date.trim() || DEMO.date);
+    const derivedCountry = country.trim() || DEMO.country;
+    setQuestionCategory(derivedCategory);
     handleGenerate({
-      indicator: DEMO.indicator,
-      country: DEMO.country,
-      date: DEMO.date,
-      limit: DEMO.limit,
+      indicator: derivedIndicator,
+      country: derivedCountry,
+      date: derivedDate,
+      limit: limit,
+      request: { question, category: derivedCategory },
     });
   };
 
-  const handleGenerate = async (override?: { indicator: string; country: string; date?: string; limit?: number }) => {
+  const handleGenerate = async (override?: {
+    indicator: string;
+    country: string;
+    date?: string;
+    limit?: number;
+    request?: { question?: string; category?: string };
+  }) => {
     resetStatus();
     setStage("generating");
     try {
@@ -142,19 +274,13 @@ export default function Data360Passport() {
         date: nextDate || undefined,
         limit: Number.isFinite(Number(nextLimit)) ? Number(nextLimit) : undefined,
       });
-      setPassport(response.passport);
-      setHashInput(response.hash);
-      setQrDataUrl(response.qrDataUrl);
-      setVerifyUrl(response.verifyUrl);
-      setVerifyResult({
-        hash: response.hash,
-        valid: true,
-        passport: response.passport,
-        chain: null,
-        verifyUrl: response.verifyUrl,
-        qrDataUrl: response.qrDataUrl,
-      });
-      await buildDemoAssets(response.passport);
+      const verified = await verifyData360Passport(response.hash);
+      setPassport(verified.passport ?? response.passport);
+      setHashInput(verified.hash);
+      setQrDataUrl(verified.qrDataUrl);
+      setVerifyUrl(verified.verifyUrl);
+      setVerifyResult(verified);
+      await buildDemoAssets(verified.passport ?? response.passport, override?.request);
       setStage("done");
     } catch (err: unknown) {
       setError(formatError(err));
@@ -169,6 +295,7 @@ export default function Data360Passport() {
     setStage("verifying");
     try {
       const result = await verifyData360Passport(target, options);
+      let requestContext: { question?: string; category?: string } | undefined;
       setPassport(result.passport);
       setVerifyResult(result);
       setQrDataUrl(result.qrDataUrl);
@@ -178,8 +305,14 @@ export default function Data360Passport() {
         setCountry(result.passport.data360.country.name || result.passport.data360.query.country);
         setDate(result.passport.data360.query.date ?? "");
         setLimit(result.passport.data360.query.limit);
+        const indicatorName = result.passport.data360.indicator.name || result.passport.data360.query.indicator;
+        const countryLabel = result.passport.data360.country.name || result.passport.data360.query.country;
+        const generatedQuestion = `Show ${indicatorName} in ${countryLabel}.`;
+        setQuestion(generatedQuestion);
+        setQuestionCategory(indicatorName);
+        requestContext = { question: generatedQuestion, category: indicatorName };
       }
-      await buildDemoAssets(result.passport);
+      await buildDemoAssets(result.passport, requestContext);
       setStage("done");
     } catch (err: unknown) {
       setError(formatError(err));
@@ -269,16 +402,21 @@ export default function Data360Passport() {
     if (!file || !factPayload || !factHash) return;
     try {
       const dataUrl = await fileToDataUrl(file);
-      const { hash } = await buildFactHash({
+      const { hash } = await buildFactDNA({
         issuedAt: factPayload.issuedAt,
         dataHash: factPayload.dataHash,
         query: factPayload.query,
-        summary: factPayload.summary,
+        request: factPayload.request,
+        source: factPayload.source,
+        creator: factPayload.provenance.creator,
+        agent: factPayload.provenance.agent,
+        generatedAt: factPayload.provenance.generatedAt,
+        summary: factPayload.insight.summary,
         chartDataUrl: dataUrl,
       });
       setTamperResult({
         status: hash === factHash ? "match" : "mismatch",
-        message: hash === factHash ? "CONTENT MATCHED" : "CONTENT TAMPERED",
+        message: hash === factHash ? "PROVENANCE INTACT" : "PROVENANCE BROKEN",
       });
     } catch (err: unknown) {
       setTamperResult({
@@ -289,6 +427,9 @@ export default function Data360Passport() {
   };
 
   const busy = stage === "generating" || stage === "verifying" || stage === "anchoring";
+  const indicatorLabel = passport?.data360?.indicator?.name || passport?.data360?.indicator?.id || passport?.data360?.query?.indicator || "";
+  const countryLabel = passport?.data360?.country?.name || passport?.data360?.country?.id || country;
+  const issuedLabel = passport?.issuedAt ? new Date(passport.issuedAt).toLocaleString() : "";
 
   return (
     <div className="section" style={{ minHeight: "100vh" }}>
@@ -298,15 +439,15 @@ export default function Data360Passport() {
         </Link>
 
         <div className="section-header">
-          <p className="section-label">Hashmark Demo</p>
-          <h2 className="section-title">Verified Data360 Insight</h2>
+          <p className="section-label">Hashmark — Truth Engine</p>
+          <h2 className="section-title">Verified Intelligence Object</h2>
           <p className="section-desc">
-            How do we know this chart and AI-generated report were not manipulated?
+            Every development fact receives a cryptographic identity, provenance record, and verification passport.
           </p>
         </div>
 
         <div className="tech-card" style={{ marginBottom: 20 }}>
-          <h3 style={{ marginBottom: 12, fontSize: 15 }}>1 · Ask a question</h3>
+          <h3 style={{ marginBottom: 12, fontSize: 15 }}>1 · Intelligence request</h3>
           <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
             <span style={{ fontSize: 11, opacity: 0.6 }}>Question</span>
             <input
@@ -328,44 +469,71 @@ export default function Data360Passport() {
             />
           </label>
           <button className="btn btn-primary" style={{ marginTop: 16, width: "100%" }} onClick={handleAskQuestion} disabled={busy}>
-            {stage === "generating" ? "Fetching data…" : "Fetch official data"}
+            {stage === "generating" ? "Fetching evidence…" : "Fetch official evidence"}
           </button>
           <p style={{ fontSize: 12, opacity: 0.6, marginTop: 10 }}>
-            Using World Bank Data360 · Indicator {indicator} · {country} · {date}
+            Mapped to World Bank Data360 · Topic {questionCategory} · Indicator {indicator} · {country} · {date || "latest"}
           </p>
         </div>
 
         {passport && (
           <div className="tech-card" style={{ marginBottom: 20 }}>
-            <h3 style={{ marginBottom: 12, fontSize: 15 }}>2 · Official data + AI summary</h3>
+            <h3 style={{ marginBottom: 12, fontSize: 15 }}>2 · Data360 evidence + intelligence synthesis</h3>
             {chartDataUrl && (
               <div style={{ background: "#0f1117", borderRadius: 16, padding: 12 }}>
-                <img src={chartDataUrl} alt="Youth unemployment chart" style={{ width: "100%", borderRadius: 12 }} />
+                <img src={chartDataUrl} alt={`${indicatorLabel || "Indicator"} chart`} style={{ width: "100%", borderRadius: 12 }} />
               </div>
             )}
             <div style={{ marginTop: 16 }}>
-              <p style={{ fontSize: 11, opacity: 0.6, marginBottom: 6 }}>AI summary</p>
+              <p style={{ fontSize: 11, opacity: 0.6, marginBottom: 6 }}>Verifiable development narrative</p>
               <p style={{ fontSize: 14 }}>{summary || "Generating summary..."}</p>
             </div>
-            <p style={{ fontSize: 12, opacity: 0.6, marginTop: 12 }}>
-              Source:{" "}
-              <a href={passport.data360.dataUrl} target="_blank" rel="noreferrer" style={{ color: "var(--accent)" }}>
-                World Bank Data360
-              </a>
-            </p>
+            <div style={{ marginTop: 14, display: "grid", gap: 8, fontSize: 12 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "140px 1fr", gap: 8 }}>
+                <span style={{ opacity: 0.6 }}>Evidence hash</span>
+                <code style={{ fontSize: 11, wordBreak: "break-all" }}>{passport.hash}</code>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "140px 1fr", gap: 8 }}>
+                <span style={{ opacity: 0.6 }}>Issued at</span>
+                <span>{issuedLabel || "—"}</span>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "140px 1fr", gap: 8 }}>
+                <span style={{ opacity: 0.6 }}>Indicator</span>
+                <span>{indicatorLabel}</span>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "140px 1fr", gap: 8 }}>
+                <span style={{ opacity: 0.6 }}>Country</span>
+                <span>{countryLabel}</span>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "140px 1fr", gap: 8 }}>
+                <span style={{ opacity: 0.6 }}>Reporting period</span>
+                <span>{passport.data360.query.date ?? "Latest available"}</span>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "140px 1fr", gap: 8 }}>
+                <span style={{ opacity: 0.6 }}>Source authority</span>
+                <a href={passport.data360.dataUrl} target="_blank" rel="noreferrer" style={{ color: "var(--accent)" }}>
+                  World Bank Data360
+                </a>
+              </div>
+            </div>
           </div>
         )}
 
         {passport && (
           <div className="tech-card" style={{ marginBottom: 20 }}>
-            <h3 style={{ marginBottom: 12, fontSize: 15 }}>3 · Verify & Publish</h3>
+            <h3 style={{ marginBottom: 12, fontSize: 15 }}>3 · Fact DNA + provenance registration</h3>
             <p style={{ fontSize: 12, opacity: 0.6, marginBottom: 12 }}>
-              Hash the chart + summary, anchor the proof on-chain, and generate a public verification passport.
+              The dataset, chart, summary, provenance metadata, timestamp, and identities fuse into a single Fact DNA fingerprint.
             </p>
             {factHash && (
               <div style={{ marginBottom: 12 }}>
-                <p style={{ fontSize: 11, opacity: 0.6, marginBottom: 6 }}>Fact hash</p>
+                <p style={{ fontSize: 11, opacity: 0.6, marginBottom: 6 }}>Fact DNA</p>
                 <code style={{ fontSize: 11, wordBreak: "break-all" }}>{factHash}</code>
+              </div>
+            )}
+            {factPayload && (
+              <div style={{ marginBottom: 12, fontSize: 12, opacity: 0.7 }}>
+                Creator: {factPayload.provenance.creator} · Agent: {factPayload.provenance.agent}
               </div>
             )}
             {!wallet.address ? (
@@ -375,7 +543,7 @@ export default function Data360Passport() {
             ) : (
               <div style={{ display: "flex", flexWrap: "wrap", gap: 12, alignItems: "center" }}>
                 <button className="btn btn-primary" onClick={handleAnchor} disabled={busy || !factHash}>
-                  {stage === "anchoring" ? "Publishing…" : "Verify & Publish"}
+                  {stage === "anchoring" ? "Publishing…" : "Register provenance"}
                 </button>
                 <span style={{ fontSize: 12, opacity: 0.6 }}>{wallet.chainName}</span>
               </div>
@@ -389,14 +557,14 @@ export default function Data360Passport() {
             <div style={{ marginTop: 16, display: "grid", gap: 10 }}>
               <div style={{ fontSize: 12, fontWeight: 600, color: verifyResult?.valid ? "#4ade80" : "#f87171" }}>
                 {verifyResult
-                  ? (verifyResult.valid ? "✅ Verified by Hashmark" : "⚠️ Hash mismatch")
+                  ? (verifyResult.valid ? "✅ Fact DNA sealed" : "⚠️ Integrity mismatch")
                   : "—"}
               </div>
               <div style={{ fontSize: 12, opacity: 0.7 }}>✅ Source: World Bank Data360</div>
               <div style={{ fontSize: 12, opacity: 0.7 }}>
                 {factProof?.authenticated
-                  ? `✅ Timestamped on-chain${factProof.timestamp ? ` at ${new Date(factProof.timestamp * 1000).toLocaleString()}` : ""}`
-                  : "⏳ Not yet anchored on-chain"}
+                  ? `✅ Provenance registered${factProof.timestamp ? ` at ${new Date(factProof.timestamp * 1000).toLocaleString()}` : ""}`
+                  : "⏳ Provenance registration pending"}
               </div>
             </div>
 
@@ -425,14 +593,14 @@ export default function Data360Passport() {
 
         {(verifyResult || factHash) && (
           <div className="tech-card" style={{ marginBottom: 20 }}>
-            <h3 style={{ marginBottom: 12, fontSize: 15 }}>4 · Public verification</h3>
+            <h3 style={{ marginBottom: 12, fontSize: 15 }}>4 · Public verification passport</h3>
             <p style={{ fontSize: 12, opacity: 0.6, marginBottom: 12 }}>
-              Verification page shows the original chart, source dataset, blockchain proof, and status.
+              The passport is portable and scannable: it reconstructs the evidence, lineage, and integrity status anywhere it appears.
             </p>
             <div style={{ display: "grid", gap: 10 }}>
               <div style={{ fontSize: 12, fontWeight: 600, color: verifyResult?.valid ? "#4ade80" : "#f87171" }}>
                 {verifyResult
-                  ? (verifyResult.valid ? "✅ Passport verified" : "⚠️ Passport hash mismatch")
+                  ? (verifyResult.valid ? "✅ Passport authentic" : "⚠️ Passport hash mismatch")
                   : "—"}
               </div>
               <div style={{ fontSize: 12, opacity: 0.7 }}>
@@ -447,9 +615,9 @@ export default function Data360Passport() {
 
         {factHash && (
           <div className="tech-card" style={{ marginBottom: 20 }}>
-            <h3 style={{ marginBottom: 12, fontSize: 15 }}>5 · Tampering demo</h3>
+            <h3 style={{ marginBottom: 12, fontSize: 15 }}>5 · Misinformation stress test</h3>
             <p style={{ fontSize: 12, opacity: 0.6, marginBottom: 12 }}>
-              Modify the chart (e.g. change 12% → 4%), then upload it here to prove tampering.
+              Alter the chart (crop attribution, edit values, manipulate percentages) and upload it to see provenance break instantly.
             </p>
             <input
               type="file"
