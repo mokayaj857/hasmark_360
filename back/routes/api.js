@@ -72,19 +72,26 @@ function requestJson(url, { method = "GET", headers = {}, body } = {}) {
           try {
             parsedBody = JSON.parse(body);
           } catch (err) {
-            return reject(new Error(`Data360 response parse failed: ${err.message}`));
+            const parseErr = new Error(`Data360 response parse failed: ${err.message}`);
+            parseErr.status = 502;
+            return reject(parseErr);
           }
         }
         if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
-          const message = parsedBody?.error || parsedBody?.title || `Data360 request failed (${res.statusCode || "unknown"}).`;
-          return reject(new Error(message));
+          const status = res.statusCode || 500;
+          const message = parsedBody?.error || parsedBody?.title || `Data360 request failed (${status}).`;
+          const httpErr = new Error(message);
+          httpErr.status = status;
+          return reject(httpErr);
         }
         resolve(parsedBody);
       });
     });
     req.on("error", reject);
     req.setTimeout(15000, () => {
-      req.destroy(new Error("Data360 request timed out."));
+      const timeoutErr = new Error("Data360 request timed out.");
+      timeoutErr.status = 504;
+      req.destroy(timeoutErr);
     });
     if (payload) req.write(payload);
     req.end();
@@ -213,7 +220,7 @@ async function resolveData360Indicator(value) {
     const indicatorId = (sd.idno || normalized).toUpperCase();
     const databaseId = sd.database_id || direct.databaseId || parseData360IndicatorId(indicatorId)?.databaseId || "";
     if (!databaseId) {
-      throw new Error("Data360 database ID is missing for this indicator.");
+      throw createHttpError(502, "Data360 database ID is missing for this indicator.");
     }
     const refCountries = Array.isArray(sd.ref_country) ? sd.ref_country : [];
     return {
@@ -228,7 +235,7 @@ async function resolveData360Indicator(value) {
   const search = await postData360("data360/searchv2", { search: normalized, top: 8 });
   const results = Array.isArray(search?.value) ? search.value : [];
   if (!results.length) {
-    throw new Error("No Data360 indicators matched that query. Use a Data360 indicator ID like WB_HNP_SP_POP_TOTL.");
+    throw createHttpError(404, "No Data360 indicators matched that query. Use a Data360 indicator ID like WB_HNP_SP_POP_TOTL.");
   }
 
   const codeLike = /^[A-Za-z0-9._-]+$/.test(normalized) && !/\s/.test(normalized);
@@ -242,14 +249,14 @@ async function resolveData360Indicator(value) {
 
   if (!match && !codeLike) match = results[0];
   if (!match) {
-    throw new Error("No Data360 indicator matched that code. Use a Data360 indicator ID like WB_HNP_SP_POP_TOTL.");
+    throw createHttpError(404, "No Data360 indicator matched that code. Use a Data360 indicator ID like WB_HNP_SP_POP_TOTL.");
   }
 
   const sd = match.series_description || {};
   const indicatorId = (sd.idno || normalized).toUpperCase();
   const databaseId = sd.database_id || parseData360IndicatorId(indicatorId)?.databaseId || "";
   if (!databaseId) {
-    throw new Error("Data360 database ID is missing for this indicator.");
+    throw createHttpError(502, "Data360 database ID is missing for this indicator.");
   }
   const refCountries = Array.isArray(sd.ref_country) ? sd.ref_country : [];
   return {
@@ -294,7 +301,8 @@ async function buildData360Passport({ indicator, country, date, limit, database,
   try {
     resolved = await resolveData360Indicator(indicatorInput);
   } catch (err) {
-    throw createHttpError(404, err.message);
+    if (err?.status) throw err;
+    throw createHttpError(502, err?.message || "Failed to resolve Data360 indicator.");
   }
 
   const indicatorId = resolved.indicatorId;
