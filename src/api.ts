@@ -1,7 +1,7 @@
 // Frontend API client for Hashmark backend
 // Defaults to the Vite proxy at /api unless VITE_API_BASE is provided.
 
-const BASE = import.meta.env.VITE_API_BASE || "/api";
+const BASE = (import.meta.env.VITE_API_BASE || "/api").replace(/\/$/, "");
 
 export interface HashFileResult {
   hash: string;
@@ -58,6 +58,15 @@ export interface QrResult {
   qrDataUrl: string;
   verifyUrl: string;
   hash: string;
+}
+
+export interface VideoInfo {
+  hash: string;
+  filename: string;
+  mimetype: string;
+  size: number;
+  storedAt: string;
+  url: string;
 }
 
 export interface Data360SeriesPoint {
@@ -182,9 +191,30 @@ export async function getRecent(limit = 20): Promise<RecentResult> {
 }
 
 /** Get a QR code data URL linking to the verify page for a hash. */
-export async function getQrCode(hash: string): Promise<QrResult> {
-  const res = await fetch(`${BASE}/qr/${encodeURIComponent(hash)}`);
+export async function getQrCode(hash: string, target?: "verify" | "watch"): Promise<QrResult> {
+  const query = target ? `?target=${encodeURIComponent(target)}` : "";
+  const res = await fetch(`${BASE}/qr/${encodeURIComponent(hash)}${query}`);
   return handleResponse<QrResult>(res);
+}
+
+/** Upload and store a video by hash so it can be streamed later. */
+export async function uploadVideo(file: File, hash?: string): Promise<VideoInfo> {
+  const form = new FormData();
+  form.append("file", file);
+  if (hash) form.append("hash", hash);
+  const res = await fetch(`${BASE}/videos`, { method: "POST", body: form });
+  return handleResponse<VideoInfo>(res);
+}
+
+/** Fetch stored video metadata by hash. */
+export async function getVideoInfo(hash: string): Promise<VideoInfo> {
+  const res = await fetch(`${BASE}/videos/${encodeURIComponent(hash)}/info`);
+  return handleResponse<VideoInfo>(res);
+}
+
+/** Build the streaming URL for a stored video. */
+export function getVideoUrl(hash: string): string {
+  return `${BASE}/videos/${encodeURIComponent(hash)}`;
 }
 
 /** Get backend / contract info. */

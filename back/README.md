@@ -23,6 +23,9 @@ Server starts on **http://localhost:4000**.
 | GET  | `/api/info` | Contract address + server wallet info |
 | POST | `/api/hash/file` | Upload a file (field `file`), returns SHA-256 hash |
 | POST | `/api/hash/raw` | Hash a raw string value |
+| POST | `/api/videos` | Store a video file for playback by hash |
+| GET  | `/api/videos/:hash` | Stream a stored video by hash |
+| GET  | `/api/videos/:hash/info` | Fetch stored video metadata |
 | POST | `/api/authenticate` | Store a hash on-chain (requires `PRIVATE_KEY` in `.env`) |
 | GET  | `/api/verify/:hash` | Check if a hash is authenticated on-chain |
 | POST | `/api/data360/passport` | Build a verifiable Data360 passport from World Bank data |
@@ -41,6 +44,23 @@ Field: file (video/audio/binary)
 ```json
 { "value": "some string" }
 → { "hash": "sha256hex..." }
+```
+
+### POST /api/videos
+```
+Content-Type: multipart/form-data
+Field: file (video/audio/binary)
+Optional field: hash (sha256 hex)
+
+→ { hash, filename, size, mimetype, storedAt, url }
+```
+
+### GET /api/videos/:hash
+Streams the stored video (supports range requests for HTML5 playback).
+
+### GET /api/videos/:hash/info
+```
+→ { hash, filename, size, mimetype, storedAt, url }
 ```
 
 ### POST /api/authenticate

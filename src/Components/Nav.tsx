@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { ethers } from "ethers";
 import HashmarkABI from "../abi/Hashmark.json";
+import { uploadVideo } from "../api";
 
 /* ── Types ── */
 type Tab        = "record" | "verify";
@@ -26,15 +27,16 @@ const _raw_contract = (import.meta.env.VITE_CONTRACT_ADDRESS as string) || "";
 const CONTRACT_ADDRESS = (_raw_contract.match(/0x[0-9a-fA-F]{40}/) || [""])[0];
 
 /* ── Real QR Code (from backend) ── */
-function QRImg({ hash }: { hash: string }) {
+function QRImg({ hash, target = "verify" }: { hash: string; target?: "verify" | "watch" }) {
   const [src, setSrc] = useState<string | null>(null);
   useEffect(() => {
     if (!hash) return;
-    fetch(`/api/qr/${encodeURIComponent(hash)}`)
+    const query = target === "verify" ? "" : `?target=${encodeURIComponent(target)}`;
+    fetch(`/api/qr/${encodeURIComponent(hash)}${query}`)
       .then(r => r.json())
       .then(d => { if (d.qrDataUrl) setSrc(d.qrDataUrl); })
       .catch(() => {});
-  }, [hash]);
+  }, [hash, target]);
   return (
     <div style={{width:"min(180px,40vw)",height:"min(180px,40vw)",borderRadius:16,background:"#fff",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,overflow:"hidden"}}>
       {src
@@ -136,6 +138,9 @@ function RecordTab({ wallet, signer, chainId, connecting, installed, onConnect }
   const [txTs,setTxTs]         = useState<number|null>(null);
   const [txNet,setTxNet]       = useState("");
   const [signErr,setSignErr]   = useState("");
+  const [uploading,setUploading] = useState(false);
+  const [uploadErr,setUploadErr] = useState("");
+  const [videoStored,setVideoStored] = useState(false);
 
   const liveRef   = useRef<HTMLVideoElement>(null);
   const mrRef     = useRef<MediaRecorder|null>(null);
@@ -157,7 +162,23 @@ function RecordTab({ wallet, signer, chainId, connecting, installed, onConnect }
     mr.ondataavailable=e=>{if(e.data.size>0)chunksRef.current.push(e.data);};
     mr.onstop=async()=>{
       const blob=new Blob(chunksRef.current,{type:"video/webm"});
-      setVideoURL(URL.createObjectURL(blob));setHash(await sha256(blob));setStep("preview");
+      const computedHash = await sha256(blob);
+      setVideoURL(URL.createObjectURL(blob));
+      setHash(computedHash);
+      setStep("preview");
+      setUploadErr("");
+      setVideoStored(false);
+      setUploading(true);
+      try {
+        const file = new File([blob], `hashmark_${Date.now()}.webm`, { type: blob.type || "video/webm" });
+        await uploadVideo(file, computedHash);
+        setVideoStored(true);
+      } catch (err: unknown) {
+        const msg = (err as { message?: string }).message || "Video upload failed.";
+        setUploadErr(msg);
+      } finally {
+        setUploading(false);
+      }
     };
     mr.start();mrRef.current=mr;
     setElapsed(0);timerRef.current=setInterval(()=>setElapsed(s=>s+1),1000);setStep("recording");
@@ -172,7 +193,7 @@ function RecordTab({ wallet, signer, chainId, connecting, installed, onConnect }
     a.click();
     document.body.removeChild(a);
   };
-  const reset=()=>{setStep("idle");setVideoURL(null);setHash(null);setTxHash(null);setSignErr("");setProgress(0);setTxBlock(null);setTxTs(null);setTxNet("");};
+  const reset=()=>{setStep("idle");setVideoURL(null);setHash(null);setTxHash(null);setSignErr("");setProgress(0);setTxBlock(null);setTxTs(null);setTxNet("");setUploading(false);setUploadErr("");setVideoStored(false);};
 
   const sign = async () => {
     if (!signer || !wallet || !hash) return;
@@ -355,8 +376,23 @@ function RecordTab({ wallet, signer, chainId, connecting, installed, onConnect }
           </div>
           <div style={{display:"flex",gap:18,flexWrap:"wrap",alignItems:"flex-start"}}>
             <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:8,flexShrink:0}}>
-              <QRImg hash={hash}/>
-              <span style={{fontFamily:"'DM Mono',monospace",fontSize:9,color:"rgba(255,255,255,0.3)",letterSpacing:"0.14em",textTransform:"uppercase"}}>Scan to verify</span>
+              {videoStored ? (
+                <QRImg hash={hash} target="watch"/>
+              ) : (
+                <div style={{width:"min(180px,40vw)",height:"min(180px,40vw)",borderRadius:16,background:"rgba(255,255,255,0.06)",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,overflow:"hidden",textAlign:"center",padding:12}}>
+                  <span style={{fontFamily:"'DM Mono',monospace",fontSize:10,color:"rgba(255,255,255,0.5)",lineHeight:1.6}}>
+                    {uploading ? "Uploading video for playback…" : "Video not stored yet"}
+                  </span>
+                </div>
+              )}
+              <span style={{fontFamily:"'DM Mono',monospace",fontSize:9,color:"rgba(255,255,255,0.3)",letterSpacing:"0.14em",textTransform:"uppercase"}}>
+                {videoStored ? "Scan to watch" : "QR pending"}
+              </span>
+              {uploadErr && (
+                <span style={{fontFamily:"'DM Mono',monospace",fontSize:9,color:"rgba(248,113,113,0.7)",letterSpacing:"0.08em",textAlign:"center",maxWidth:180}}>
+                  Upload failed: {uploadErr}
+                </span>
+              )}
             </div>
             <Glass style={{flex:1,minWidth:180,padding:16}}>
               <Row label="TX Hash"    value={short(txHash)}                         color="#4A9EDB"/>

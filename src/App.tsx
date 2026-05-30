@@ -10,6 +10,7 @@ import Solution from "./Components/Solution";
 import Test from "./Components/Test";
 import Verify from "./Components/Verify";
 import Data360Passport from "./Components/Data360Passport";
+import Watch from "./Components/Watch";
 const App = () => {
   return (
     <Router>
@@ -24,6 +25,7 @@ const App = () => {
         <Route path="/about" element={<About />} />
         <Route path="/scroll" element={<Scroll />} />
         <Route path="/verify" element={<Verify />} />
+        <Route path="/watch" element={<Watch />} />
         <Route path="/passport" element={<Data360Passport />} />
         <Route path="/test" element={<Test />} />
         {/* <Route path="weather" element={<Weather />} /> */}

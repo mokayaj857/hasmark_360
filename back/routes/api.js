@@ -18,6 +18,7 @@ const DATA360_BASE_URL = (process.env.DATA360_BASE_URL || "https://data360api.wo
 const DATA360_API_KEY = (process.env.DATA360_API_KEY || "").trim();
 const DATA360_API_KEY_PARAM = (process.env.DATA360_API_KEY_PARAM || "api_key").trim() || "api_key";
 const PASSPORT_DIR = path.join(__dirname, "../cache/passports");
+const VIDEO_DIR = path.join(__dirname, "../cache/videos");
 const HASH_RE = /^[a-f0-9]{64}$/i;
 
 function stableStringify(value) {
@@ -116,6 +117,36 @@ async function savePassport(hash, passport) {
   await ensurePassportDir();
   const filePath = path.join(PASSPORT_DIR, `${hash}.json`);
   await fs.promises.writeFile(filePath, JSON.stringify(passport, null, 2), "utf8");
+}
+
+async function ensureVideoDir() {
+  await fs.promises.mkdir(VIDEO_DIR, { recursive: true });
+}
+
+function getVideoPaths(hash) {
+  const safeHash = hash.toLowerCase();
+  return {
+    videoPath: path.join(VIDEO_DIR, `${safeHash}.bin`),
+    metaPath: path.join(VIDEO_DIR, `${safeHash}.json`),
+  };
+}
+
+async function saveVideo(hash, buffer, meta) {
+  await ensureVideoDir();
+  const { videoPath, metaPath } = getVideoPaths(hash);
+  await fs.promises.writeFile(videoPath, buffer);
+  await fs.promises.writeFile(metaPath, JSON.stringify(meta, null, 2), "utf8");
+}
+
+async function loadVideoMeta(hash) {
+  const { metaPath } = getVideoPaths(hash);
+  try {
+    const raw = await fs.promises.readFile(metaPath, "utf8");
+    return JSON.parse(raw);
+  } catch (err) {
+    if (err.code === "ENOENT") return null;
+    throw err;
+  }
 }
 
 async function loadPassport(hash) {
@@ -460,6 +491,105 @@ router.post("/hash/file", upload.single("file"), (req, res) => {
 });
 
 /* ─────────────────────────────────────────────────────────────────────────────
+   POST /api/videos
+   Upload and store a video file so it can be streamed by hash later.
+   Body (multipart): file + optional hash (SHA-256 hex)
+───────────────────────────────────────────────────────────────────────────── */
+router.post("/videos", upload.single("file"), async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: "No file uploaded. Use multipart field name 'file'." });
+  }
+
+  const providedHash = (req.body?.hash || "").trim();
+  if (providedHash && !HASH_RE.test(providedHash)) {
+    return res.status(400).json({ error: "Hash must be a 64-character hex string." });
+  }
+
+  const computedHash = sha256Hex(req.file.buffer);
+  if (providedHash && providedHash.toLowerCase() !== computedHash.toLowerCase()) {
+    return res.status(400).json({ error: "Provided hash does not match file contents." });
+  }
+
+  const meta = {
+    hash: computedHash,
+    filename: req.file.originalname,
+    mimetype: req.file.mimetype,
+    size: req.file.size,
+    storedAt: new Date().toISOString(),
+  };
+
+  await saveVideo(computedHash, req.file.buffer, meta);
+  res.json({ ...meta, url: `/api/videos/${computedHash}` });
+});
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   GET /api/videos/:hash/info
+   Return metadata for a stored video.
+───────────────────────────────────────────────────────────────────────────── */
+router.get("/videos/:hash/info", async (req, res) => {
+  const hash = req.params.hash?.trim();
+  if (!hash || !HASH_RE.test(hash)) {
+    return res.status(400).json({ error: "Hash parameter must be a 64-character hex string." });
+  }
+
+  const meta = await loadVideoMeta(hash);
+  if (!meta) return res.status(404).json({ error: "Video not found." });
+  res.json({ ...meta, url: `/api/videos/${hash}` });
+});
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   GET /api/videos/:hash
+   Stream a stored video by hash (supports range requests).
+───────────────────────────────────────────────────────────────────────────── */
+router.get("/videos/:hash", async (req, res) => {
+  const hash = req.params.hash?.trim();
+  if (!hash || !HASH_RE.test(hash)) {
+    return res.status(400).json({ error: "Hash parameter must be a 64-character hex string." });
+  }
+
+  const meta = await loadVideoMeta(hash);
+  if (!meta) return res.status(404).json({ error: "Video not found." });
+
+  const { videoPath } = getVideoPaths(hash);
+  const stat = await fs.promises.stat(videoPath);
+  const size = stat.size;
+  const range = req.headers.range;
+  const contentType = meta.mimetype || "application/octet-stream";
+  const filename = meta.filename || `${hash}.bin`;
+
+  if (range) {
+    const match = /bytes=(\d*)-(\d*)/.exec(range);
+    if (!match) {
+      return res.status(416).json({ error: "Invalid range header." });
+    }
+    const start = match[1] ? Number.parseInt(match[1], 10) : 0;
+    const end = match[2] ? Number.parseInt(match[2], 10) : size - 1;
+    if (Number.isNaN(start) || Number.isNaN(end) || start > end || start >= size) {
+      return res.status(416).json({ error: "Requested range not satisfiable." });
+    }
+
+    res.status(206);
+    res.set({
+      "Content-Range": `bytes ${start}-${end}/${size}`,
+      "Accept-Ranges": "bytes",
+      "Content-Length": end - start + 1,
+      "Content-Type": contentType,
+      "Content-Disposition": `inline; filename="${encodeURIComponent(filename)}"`,
+    });
+    fs.createReadStream(videoPath, { start, end }).pipe(res);
+    return;
+  }
+
+  res.set({
+    "Content-Length": size,
+    "Content-Type": contentType,
+    "Content-Disposition": `inline; filename="${encodeURIComponent(filename)}"`,
+    "Accept-Ranges": "bytes",
+  });
+  fs.createReadStream(videoPath).pipe(res);
+});
+
+/* ─────────────────────────────────────────────────────────────────────────────
    POST /api/hash/raw
    Hash a raw string (e.g. a hex IPFS CID or custom identifier).
    Body (JSON): { value: string }
@@ -770,15 +900,21 @@ router.get("/recent", async (req, res) => {
 
 /* ─────────────────────────────────────────────────────────────────────────────
    GET /api/qr/:hash
-   Generate a QR code PNG (data URL) linking to the verify page for this hash.
-   The verify URL is: FRONTEND_URL/verify?hash=<hash>
+   Generate a QR code PNG (data URL) linking to a frontend page for this hash.
+   Query: ?target=verify|watch (default: verify)
+   The verify URL is: FRONTEND_URL/<target>?hash=<hash>
 ───────────────────────────────────────────────────────────────────────────── */
 router.get("/qr/:hash", async (req, res) => {
   const hash = req.params.hash?.trim();
   if (!hash) return res.status(400).json({ error: "Hash parameter is required." });
 
   const frontendUrl = (process.env.FRONTEND_URL || "http://localhost:5173").replace(/\/$/, "");
-  const verifyUrl   = `${frontendUrl}/verify?hash=${encodeURIComponent(hash)}`;
+  const target = String(req.query.target || "verify").toLowerCase();
+  const route = target === "watch" ? "watch" : target === "verify" ? "verify" : null;
+  if (!route) {
+    return res.status(400).json({ error: "Invalid target. Use 'verify' or 'watch'." });
+  }
+  const verifyUrl = `${frontendUrl}/${route}?hash=${encodeURIComponent(hash)}`;
 
   try {
     const qrDataUrl = await QRCode.toDataURL(verifyUrl, {
