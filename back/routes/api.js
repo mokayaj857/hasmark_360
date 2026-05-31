@@ -3,6 +3,7 @@
 const express  = require("express");
 const crypto   = require("crypto");
 const fs       = require("fs");
+const os       = require("os");
 const http     = require("http");
 const https    = require("https");
 const path     = require("path");
@@ -147,6 +148,57 @@ async function loadVideoMeta(hash) {
     if (err.code === "ENOENT") return null;
     throw err;
   }
+}
+
+function getLanFrontendUrl(port) {
+  const ifaces = os.networkInterfaces();
+  for (const entries of Object.values(ifaces)) {
+    if (!entries) continue;
+    for (const entry of entries) {
+      if (entry.family === "IPv4" && !entry.internal) {
+        return `http://${entry.address}:${port}`;
+      }
+    }
+  }
+  return null;
+}
+
+/** Prefer the caller's origin (local dev) over FRONTEND_URL (production default). */
+function resolveFrontendUrl(req) {
+  const candidates = [
+    req.query.base,
+    req.headers.origin,
+    process.env.FRONTEND_URL,
+    "http://localhost:5173",
+  ];
+  let resolved = "http://localhost:5173";
+  for (const raw of candidates) {
+    if (!raw || typeof raw !== "string") continue;
+    try {
+      const url = new URL(raw.trim());
+      if (url.protocol !== "http:" && url.protocol !== "https:") continue;
+      resolved = `${url.protocol}//${url.host}`;
+      break;
+    } catch {
+      /* try next candidate */
+    }
+  }
+
+  // Phones cannot open "localhost" — use this machine's LAN IP for QR codes in local dev.
+  if (req.query.scan !== "0") {
+    try {
+      const parsed = new URL(resolved);
+      if (parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1") {
+        const port = parsed.port || "5173";
+        const lan = getLanFrontendUrl(port);
+        if (lan) resolved = lan;
+      }
+    } catch {
+      /* keep resolved */
+    }
+  }
+
+  return resolved;
 }
 
 async function loadPassport(hash) {
@@ -965,14 +1017,14 @@ router.get("/recent", async (req, res) => {
 /* ─────────────────────────────────────────────────────────────────────────────
    GET /api/qr/:hash
    Generate a QR code PNG (data URL) linking to a frontend page for this hash.
-   Query: ?target=verify|watch (default: verify)
-   The verify URL is: FRONTEND_URL/<target>?hash=<hash>
+   Query: ?target=verify|watch (default: verify), ?base=<origin> (optional, defaults to Origin header or FRONTEND_URL)
+   The page URL is: <frontend>/<target>?hash=<hash>
 ───────────────────────────────────────────────────────────────────────────── */
 router.get("/qr/:hash", async (req, res) => {
   const hash = req.params.hash?.trim();
   if (!hash) return res.status(400).json({ error: "Hash parameter is required." });
 
-  const frontendUrl = (process.env.FRONTEND_URL || "http://localhost:5173").replace(/\/$/, "");
+  const frontendUrl = resolveFrontendUrl(req);
   const target = String(req.query.target || "verify").toLowerCase();
   const route = target === "watch" ? "watch" : target === "verify" ? "verify" : null;
   if (!route) {

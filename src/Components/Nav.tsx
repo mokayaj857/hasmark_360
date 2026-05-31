@@ -94,20 +94,44 @@ async function refreshWalletState(eip: ethers.Eip1193Provider) {
 /* ── Real QR Code (from backend) ── */
 function QRImg({ hash, target = "verify" }: { hash: string; target?: "verify" | "watch" }) {
   const [src, setSrc] = useState<string | null>(null);
+  const [pageUrl, setPageUrl] = useState<string | null>(null);
   useEffect(() => {
     if (!hash) return;
-    const query = target === "verify" ? "" : `?target=${encodeURIComponent(target)}`;
-    fetch(`/api/qr/${encodeURIComponent(hash)}${query}`)
+    const params = new URLSearchParams({ base: window.location.origin });
+    if (target !== "verify") params.set("target", target);
+    fetch(`/api/qr/${encodeURIComponent(hash)}?${params}`)
       .then(r => r.json())
-      .then(d => { if (d.qrDataUrl) setSrc(d.qrDataUrl); })
+      .then(d => {
+        if (d.qrDataUrl) setSrc(d.qrDataUrl);
+        if (d.verifyUrl) setPageUrl(d.verifyUrl);
+      })
       .catch(() => {});
   }, [hash, target]);
   return (
-    <div style={{width:"min(180px,40vw)",height:"min(180px,40vw)",borderRadius:16,background:"#fff",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,overflow:"hidden"}}>
-      {src
-        ? <img src={src} alt="QR Code" style={{width:"100%",height:"100%",objectFit:"contain"}}/>
-        : <span style={{fontFamily:"'DM Mono',monospace",fontSize:9,color:"#999",letterSpacing:"0.1em"}}>Loading QR…</span>
-      }
+    <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:8,flexShrink:0}}>
+      <div style={{width:"min(180px,40vw)",height:"min(180px,40vw)",borderRadius:16,background:"#fff",display:"flex",alignItems:"center",justifyContent:"center",overflow:"hidden"}}>
+        {src
+          ? <img src={src} alt="QR Code" style={{width:"100%",height:"100%",objectFit:"contain"}}/>
+          : <span style={{fontFamily:"'DM Mono',monospace",fontSize:9,color:"#999",letterSpacing:"0.1em"}}>Loading QR…</span>
+        }
+      </div>
+      {pageUrl && target === "watch" && pageUrl.startsWith("http") && !pageUrl.startsWith(window.location.origin) && (
+        <span style={{fontFamily:"'DM Mono',monospace",fontSize:8,color:"rgba(255,255,255,0.35)",letterSpacing:"0.06em",textAlign:"center",maxWidth:180,lineHeight:1.5}}>
+          Scan from phone: {pageUrl.replace(/^https?:\/\//, "")}
+        </span>
+      )}
+      {(pageUrl || hash) && target === "watch" && (
+        <a href={`/watch?hash=${encodeURIComponent(hash)}`}
+          style={{fontFamily:"'DM Mono',monospace",fontSize:9,color:"rgba(212,168,67,0.75)",letterSpacing:"0.08em",textDecoration:"none",textAlign:"center",maxWidth:180,wordBreak:"break-all"}}>
+          Watch this video
+        </a>
+      )}
+      {pageUrl && target !== "watch" && (
+        <a href={pageUrl} target="_blank" rel="noreferrer"
+          style={{fontFamily:"'DM Mono',monospace",fontSize:9,color:"rgba(212,168,67,0.75)",letterSpacing:"0.08em",textDecoration:"none",textAlign:"center",maxWidth:180,wordBreak:"break-all"}}>
+          Open verify page
+        </a>
+      )}
     </div>
   );
 }
@@ -222,6 +246,7 @@ function RecordTab({ wallet, signer, chainId, connecting, installed, onConnect }
   const liveRef   = useRef<HTMLVideoElement>(null);
   const mrRef     = useRef<MediaRecorder|null>(null);
   const chunksRef = useRef<BlobPart[]>([]);
+  const blobRef   = useRef<Blob|null>(null);
   const timerRef  = useRef<ReturnType<typeof setInterval>|null>(null);
   const streamRef = useRef<MediaStream|null>(null);
 
@@ -239,6 +264,7 @@ function RecordTab({ wallet, signer, chainId, connecting, installed, onConnect }
     mr.ondataavailable=e=>{if(e.data.size>0)chunksRef.current.push(e.data);};
     mr.onstop=async()=>{
       const blob=new Blob(chunksRef.current,{type:"video/webm"});
+      blobRef.current = blob;
       const computedHash = await sha256(blob);
       setVideoURL(URL.createObjectURL(blob));
       setHash(computedHash);
@@ -270,12 +296,46 @@ function RecordTab({ wallet, signer, chainId, connecting, installed, onConnect }
     a.click();
     document.body.removeChild(a);
   };
-  const reset=()=>{setStep("idle");setVideoURL(null);setHash(null);setTxHash(null);setSignErr("");setProgress(0);setTxBlock(null);setTxTs(null);setTxNet("");setUploading(false);setUploadErr("");setVideoStored(false);};
+  const reset=()=>{blobRef.current=null;setStep("idle");setVideoURL(null);setHash(null);setTxHash(null);setSignErr("");setProgress(0);setTxBlock(null);setTxTs(null);setTxNet("");setUploading(false);setUploadErr("");setVideoStored(false);};
+
+  const storeVideoForPlayback = async (videoHash: string): Promise<{ ok: true } | { ok: false; message: string }> => {
+    const blob = blobRef.current;
+    if (!blob) return { ok: false, message: "Recording data is missing. Re-record the video." };
+    setUploading(true);
+    setUploadErr("");
+    try {
+      const file = new File([blob], `hashmark_${Date.now()}.webm`, { type: blob.type || "video/webm" });
+      await uploadVideo(file, videoHash);
+      setVideoStored(true);
+      return { ok: true };
+    } catch (err: unknown) {
+      const message = (err as { message?: string }).message || "Video upload failed.";
+      setUploadErr(message);
+      return { ok: false, message };
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (step !== "success" || !hash || videoStored || uploading) return;
+    storeVideoForPlayback(hash);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step, hash, videoStored]);
 
   const sign = async () => {
     if (!wallet || !hash) return;
     const eip = getMetaMaskProvider();
     if (!eip) { setSignErr("MetaMask not detected."); setStep("error"); return; }
+
+    if (!videoStored) {
+      const stored = await storeVideoForPlayback(hash);
+      if (!stored.ok) {
+        setSignErr(stored.message || "Could not save the video for playback. Check that the backend is running on port 4000.");
+        setStep("error");
+        return;
+      }
+    }
 
     const chainResult = await ensureTargetChain(eip);
     if (!chainResult.ok) { setSignErr(chainResult.message); setStep("error"); return; }
@@ -419,12 +479,17 @@ function RecordTab({ wallet, signer, chainId, connecting, installed, onConnect }
             <div style={{fontFamily:"'DM Mono',monospace",fontSize:10,color:"rgba(52,211,153,0.7)",letterSpacing:"0.18em",textTransform:"uppercase",marginBottom:8,fontWeight:500}}>SHA-256 Fingerprint</div>
             <div style={{fontFamily:"'DM Mono',monospace",fontSize:10,color:"rgba(255,255,255,0.5)",wordBreak:"break-all",lineHeight:1.7}}>{hash}</div>
           </Glass>
+          {uploadErr && !uploading && (
+            <div style={{padding:"10px 14px",borderRadius:10,background:"rgba(248,113,113,0.07)",border:"1px solid rgba(248,113,113,0.2)",fontFamily:"'DM Mono',monospace",fontSize:10,color:"#f87171",letterSpacing:"0.06em",lineHeight:1.6}}>
+              Video save failed: {uploadErr}. Signing will retry saving before anchoring on-chain.
+            </div>
+          )}
           <WalletBanner wallet={wallet} chainId={chainId} connecting={connecting} installed={installed} onConnect={onConnect}/>
           <div style={{display:"flex",gap:12,flexShrink:0}}>
             <Btn outline onClick={reset} style={{flex:1}}>Re-record</Btn>
-            <Btn gold onClick={sign} disabled={!wallet||!signer} style={{flex:2,gap:10}}>
+            <Btn gold onClick={sign} disabled={!wallet||!signer||uploading} style={{flex:2,gap:10}}>
               <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{flexShrink:0}}><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-              {wallet ? "Sign & Authenticate" : "Connect Wallet First"}
+              {uploading ? "Saving video…" : wallet ? "Sign & Authenticate" : "Connect Wallet First"}
             </Btn>
           </div>
         </div>
@@ -469,22 +534,33 @@ function RecordTab({ wallet, signer, chainId, connecting, installed, onConnect }
             </div>
           </div>
           <div style={{display:"flex",gap:18,flexWrap:"wrap",alignItems:"flex-start"}}>
+            {videoURL && (
+              <div style={{flex:"1 1 220px",minWidth:200,maxWidth:320,borderRadius:18,overflow:"hidden",border:"1px solid rgba(52,211,153,0.35)"}}>
+                <video src={videoURL} controls playsInline style={{width:"100%",display:"block",background:"#000"}}/>
+              </div>
+            )}
             <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:8,flexShrink:0}}>
               {videoStored ? (
                 <QRImg hash={hash} target="watch"/>
               ) : (
-                <div style={{width:"min(180px,40vw)",height:"min(180px,40vw)",borderRadius:16,background:"rgba(255,255,255,0.06)",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,overflow:"hidden",textAlign:"center",padding:12}}>
+                <div style={{width:"min(180px,40vw)",height:"min(180px,40vw)",borderRadius:16,background:"rgba(255,255,255,0.06)",display:"flex",alignItems:"center",justifyContent:"center",textAlign:"center",padding:12}}>
                   <span style={{fontFamily:"'DM Mono',monospace",fontSize:10,color:"rgba(255,255,255,0.5)",lineHeight:1.6}}>
-                    {uploading ? "Uploading video for playback…" : "Video not stored yet"}
+                    {uploading ? "Saving video for QR…" : "Preparing QR…"}
                   </span>
                 </div>
               )}
-              <span style={{fontFamily:"'DM Mono',monospace",fontSize:9,color:"rgba(255,255,255,0.3)",letterSpacing:"0.14em",textTransform:"uppercase"}}>
-                {videoStored ? "Scan to watch" : "QR pending"}
+              <span style={{fontFamily:"'DM Mono',monospace",fontSize:9,color:"rgba(255,255,255,0.3)",letterSpacing:"0.14em",textTransform:"uppercase",textAlign:"center"}}>
+                {videoStored ? "Scan to watch on another device" : "Saving before QR is ready"}
               </span>
+              {videoStored && hash && (
+                <a href={`/watch?hash=${encodeURIComponent(hash)}`}
+                  style={{fontFamily:"'DM Mono',monospace",fontSize:9,color:"#D4A843",letterSpacing:"0.08em",textDecoration:"none"}}>
+                  Open watch page →
+                </a>
+              )}
               {uploadErr && (
                 <span style={{fontFamily:"'DM Mono',monospace",fontSize:9,color:"rgba(248,113,113,0.7)",letterSpacing:"0.08em",textAlign:"center",maxWidth:180}}>
-                  Upload failed: {uploadErr}
+                  {uploadErr}
                 </span>
               )}
             </div>

@@ -13,6 +13,7 @@ import Test from './Components/Test';
 import About from './Components/About';
 import Solution from './Components/Solution';
 import Verify from './Components/Verify';
+import Watch from './Components/Watch';
 import Data360Passport from './Components/Data360Passport';
 import { ThemeProvider } from './context/ThemeContext';
 import './index.css';
@@ -26,6 +27,7 @@ const router = createBrowserRouter([
   { path: "about",    element: <About /> },
   { path: "white",    element: <White /> },
   { path: "verify",   element: <Verify /> },
+  { path: "watch",    element: <Watch /> },
   { path: "passport", element: <Data360Passport /> },
   { path: "scroll",   element: <Scroll /> },
   { path: "*",        element: <ErrorPage /> },

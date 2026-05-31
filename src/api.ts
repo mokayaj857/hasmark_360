@@ -190,10 +190,18 @@ export async function getRecent(limit = 20): Promise<RecentResult> {
   return handleResponse<RecentResult>(res);
 }
 
-/** Get a QR code data URL linking to the verify page for a hash. */
-export async function getQrCode(hash: string, target?: "verify" | "watch"): Promise<QrResult> {
-  const query = target ? `?target=${encodeURIComponent(target)}` : "";
-  const res = await fetch(`${BASE}/qr/${encodeURIComponent(hash)}${query}`);
+/** Get a QR code data URL linking to the verify or watch page for a hash. */
+export async function getQrCode(
+  hash: string,
+  target?: "verify" | "watch",
+  baseUrl?: string,
+): Promise<QrResult> {
+  const params = new URLSearchParams();
+  if (target) params.set("target", target);
+  if (baseUrl) params.set("base", baseUrl);
+  else if (typeof window !== "undefined") params.set("base", window.location.origin);
+  const query = params.toString();
+  const res = await fetch(`${BASE}/qr/${encodeURIComponent(hash)}${query ? `?${query}` : ""}`);
   return handleResponse<QrResult>(res);
 }
 

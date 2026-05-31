@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { getVideoInfo, getVideoUrl, verifyHash, type VerifyResult, type VideoInfo } from "../api";
 
@@ -40,45 +40,65 @@ export default function Watch() {
     return () => { cancelled = true; };
   }, [hash]);
 
+  const pageStyle: CSSProperties = {
+    minHeight: "100vh",
+    background: "#060610",
+    color: "#fff",
+    padding: "24px 16px 48px",
+  };
+
+  const cardStyle: CSSProperties = {
+    borderRadius: 16,
+    background: "rgba(255,255,255,0.04)",
+    border: "1px solid rgba(255,255,255,0.09)",
+    padding: 20,
+    marginBottom: 20,
+  };
+
   if (!hash) {
     return (
-      <div className="section" style={{ minHeight: "100vh" }}>
-        <div className="section-inner" style={{ maxWidth: 760 }}>
-          <Link to="/" style={{ fontSize: 13, opacity: 0.55, display: "inline-flex", alignItems: "center", gap: 6, marginBottom: 32, textDecoration: "none" }}>
-            ← Back to Home
+      <div style={pageStyle}>
+        <div style={{ maxWidth: 760, margin: "0 auto" }}>
+          <Link to="/nav" style={{ fontSize: 13, opacity: 0.55, display: "inline-flex", marginBottom: 32, textDecoration: "none", color: "#D4A843" }}>
+            ← Back to Record
           </Link>
-          <div className="section-header">
-            <p className="section-label">Playback</p>
-            <h2 className="section-title">Video not specified</h2>
-            <p className="section-desc">This page requires a hash in the URL.</p>
-          </div>
+          <h1 style={{ fontFamily: "'Cormorant Garamond',Georgia,serif", fontWeight: 300, fontSize: 32, marginBottom: 12 }}>Video not specified</h1>
+          <p style={{ opacity: 0.6, lineHeight: 1.7 }}>This page requires a hash in the URL, e.g. /watch?hash=…</p>
         </div>
       </div>
     );
   }
 
+  const videoSrc = getVideoUrl(hash);
+
   return (
-    <div className="section" style={{ minHeight: "100vh" }}>
-      <div className="section-inner" style={{ maxWidth: 900 }}>
-        <Link to="/" style={{ fontSize: 13, opacity: 0.55, display: "inline-flex", alignItems: "center", gap: 6, marginBottom: 32, textDecoration: "none" }}>
-          ← Back to Home
+    <div style={pageStyle}>
+      <div style={{ maxWidth: 900, margin: "0 auto" }}>
+        <Link to="/nav" style={{ fontSize: 13, opacity: 0.55, display: "inline-flex", marginBottom: 32, textDecoration: "none", color: "#D4A843" }}>
+          ← Back to Record
         </Link>
 
-        <div className="section-header" style={{ marginBottom: 28 }}>
-          <p className="section-label">Playback</p>
-          <h2 className="section-title">Recorded Video</h2>
-          <p className="section-desc">Scan a QR code to watch the original recording tied to its on-chain proof.</p>
+        <div style={{ marginBottom: 28 }}>
+          <p style={{ fontFamily: "'DM Mono',monospace", fontSize: 10, letterSpacing: "0.2em", textTransform: "uppercase", color: "#D4A843", marginBottom: 8 }}>Playback</p>
+          <h1 style={{ fontFamily: "'Cormorant Garamond',Georgia,serif", fontWeight: 300, fontSize: 32, marginBottom: 8 }}>Recorded Video</h1>
+          <p style={{ opacity: 0.55, lineHeight: 1.7 }}>Original recording linked to its on-chain SHA-256 fingerprint.</p>
         </div>
 
-        <div className="tech-card" style={{ marginBottom: 20 }}>
-          <h3 style={{ marginBottom: 12, fontSize: 15 }}>Video</h3>
+        <div style={cardStyle}>
+          <h2 style={{ marginBottom: 16, fontSize: 15, fontWeight: 500 }}>Video</h2>
           {videoInfo ? (
             <>
               <video
-                src={getVideoUrl(hash)}
+                key={hash}
+                src={videoSrc}
                 controls
-                style={{ width: "100%", borderRadius: 12, border: "1px solid var(--border)" }}
-              />
+                autoPlay
+                playsInline
+                preload="metadata"
+                style={{ width: "100%", maxHeight: "70vh", borderRadius: 12, border: "1px solid rgba(255,255,255,0.12)", background: "#000", display: "block" }}
+              >
+                <source src={videoSrc} type={videoInfo.mimetype || "video/webm"} />
+              </video>
               <div style={{ marginTop: 12, fontSize: 12, opacity: 0.65, display: "flex", flexWrap: "wrap", gap: 16 }}>
                 <span><strong>File</strong>: {videoInfo.filename}</span>
                 <span><strong>Type</strong>: {videoInfo.mimetype}</span>
@@ -87,26 +107,26 @@ export default function Watch() {
               </div>
             </>
           ) : (
-            <p style={{ fontSize: 13, opacity: 0.6, margin: 0 }}>
+            <p style={{ fontSize: 13, opacity: 0.6, margin: 0, lineHeight: 1.7 }}>
               {loading ? "Loading video…" : (videoError || "Video not available on this server.")}
             </p>
           )}
         </div>
 
-        <div className="tech-card">
-          <h3 style={{ marginBottom: 12, fontSize: 15 }}>On-chain proof</h3>
+        <div style={cardStyle}>
+          <h2 style={{ marginBottom: 16, fontSize: 15, fontWeight: 500 }}>On-chain proof</h2>
           {verifyResult ? (
             verifyResult.authenticated ? (
-              <div style={{ fontSize: 13, lineHeight: 1.7 }}>
-                <div><strong>Status</strong>: Authenticated ✅</div>
-                <div><strong>Creator</strong>: <code>{verifyResult.creator}</code></div>
+              <div style={{ fontSize: 13, lineHeight: 1.8 }}>
+                <div><strong>Status</strong>: Authenticated</div>
+                <div><strong>Creator</strong>: <code style={{ wordBreak: "break-all" }}>{verifyResult.creator}</code></div>
                 <div><strong>Timestamp</strong>: {new Date((verifyResult.timestamp || 0) * 1000).toLocaleString()}</div>
-                <div><strong>Hash</strong>: <code>{verifyResult.hash}</code></div>
+                <div><strong>Hash</strong>: <code style={{ wordBreak: "break-all" }}>{verifyResult.hash}</code></div>
               </div>
             ) : (
-              <div style={{ fontSize: 13, opacity: 0.7 }}>
+              <div style={{ fontSize: 13, opacity: 0.7, lineHeight: 1.8 }}>
                 <div><strong>Status</strong>: Not found on-chain</div>
-                <div><strong>Hash</strong>: <code>{verifyResult.hash}</code></div>
+                <div><strong>Hash</strong>: <code style={{ wordBreak: "break-all" }}>{verifyResult.hash}</code></div>
               </div>
             )
           ) : (
