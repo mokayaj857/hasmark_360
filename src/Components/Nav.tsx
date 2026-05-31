@@ -19,12 +19,77 @@ const fmt   = (s: number) => `${String(Math.floor(s/60)).padStart(2,"0")}:${Stri
 const fmtTs = (ts: number) => ts ? new Date(ts * 1000).toISOString().slice(0,19).replace("T"," ") + " UTC" : "—";
 
 function chainName(id: number): string {
-  const names: Record<number,string> = {1:"Ethereum Mainnet",11155111:"Sepolia Testnet",137:"Polygon",80001:"Mumbai",1337:"Localhost Anvil",31337:"Hardhat"};
+  const names: Record<number,string> = {
+    1:"Ethereum Mainnet",11155111:"Sepolia Testnet",84532:"Base Sepolia",8453:"Base",
+    137:"Polygon",80001:"Mumbai",1337:"Localhost Anvil",31337:"Hardhat",
+  };
   return names[id] || `Chain ${id}`;
 }
 
 const _raw_contract = (import.meta.env.VITE_CONTRACT_ADDRESS as string) || "";
 const CONTRACT_ADDRESS = (_raw_contract.match(/0x[0-9a-fA-F]{40}/) || [""])[0];
+
+const TARGET_CHAIN_ID = parseInt(import.meta.env.VITE_CHAIN_ID as string || "0", 10);
+const TARGET_RPC_URL = ((import.meta.env.VITE_RPC_URL as string) || "").trim();
+const TARGET_CHAIN_LABEL = ((import.meta.env.VITE_CHAIN_NAME as string) || "").trim()
+  || (TARGET_CHAIN_ID ? chainName(TARGET_CHAIN_ID) : "the configured network");
+const TARGET_BLOCK_EXPLORER = ((import.meta.env.VITE_BLOCK_EXPLORER_URL as string) || "").trim();
+
+type ChainEnsureResult = { ok: true } | { ok: false; message: string };
+
+async function ensureTargetChain(eip: ethers.Eip1193Provider): Promise<ChainEnsureResult> {
+  if (!TARGET_CHAIN_ID) return { ok: true };
+
+  const targetChainHex = "0x" + TARGET_CHAIN_ID.toString(16);
+  const eth = eip as { request: (a: { method: string; params?: unknown[] }) => Promise<unknown> };
+
+  const currentHex = await eth.request({ method: "eth_chainId" }) as string;
+  if (parseInt(currentHex, 16) === TARGET_CHAIN_ID) return { ok: true };
+
+  try {
+    await eth.request({ method: "wallet_switchEthereumChain", params: [{ chainId: targetChainHex }] });
+    return { ok: true };
+  } catch (switchErr: unknown) {
+    const code = (switchErr as { code?: number }).code;
+    if (code === 4001) {
+      return { ok: false, message: `Network switch to ${TARGET_CHAIN_LABEL} was rejected. Approve the prompt in MetaMask and try again.` };
+    }
+    if (code === 4902) {
+      if (!TARGET_RPC_URL) {
+        return { ok: false, message: `${TARGET_CHAIN_LABEL} is not in MetaMask. Configure VITE_RPC_URL and reconnect your wallet.` };
+      }
+      try {
+        const isLocal = TARGET_CHAIN_ID === 1337 || TARGET_CHAIN_ID === 31337;
+        await eth.request({
+          method: "wallet_addEthereumChain",
+          params: [{
+            chainId: targetChainHex,
+            chainName: isLocal ? "Hashmark Local (Anvil)" : TARGET_CHAIN_LABEL,
+            rpcUrls: [TARGET_RPC_URL],
+            nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
+            ...(TARGET_BLOCK_EXPLORER ? { blockExplorerUrls: [TARGET_BLOCK_EXPLORER] } : {}),
+          }],
+        });
+        return { ok: true };
+      } catch (addErr: unknown) {
+        const addCode = (addErr as { code?: number }).code;
+        if (addCode === 4001) {
+          return { ok: false, message: `Adding ${TARGET_CHAIN_LABEL} to MetaMask was rejected.` };
+        }
+        return { ok: false, message: (addErr as Error).message || `Could not add ${TARGET_CHAIN_LABEL} to MetaMask.` };
+      }
+    }
+    return { ok: false, message: (switchErr as Error).message || `Could not switch MetaMask to ${TARGET_CHAIN_LABEL}.` };
+  }
+}
+
+async function refreshWalletState(eip: ethers.Eip1193Provider) {
+  const provider = new ethers.BrowserProvider(eip);
+  const s = await provider.getSigner();
+  const addr = await s.getAddress();
+  const net = await provider.getNetwork();
+  return { signer: s, wallet: addr, chainId: Number(net.chainId) };
+}
 
 /* ── Real QR Code (from backend) ── */
 function QRImg({ hash, target = "verify" }: { hash: string; target?: "verify" | "watch" }) {
@@ -99,12 +164,24 @@ function WalletBanner({ wallet, chainId, connecting, installed, onConnect }:{
   wallet: string|null; chainId: number|null; connecting: boolean;
   installed: boolean; onConnect: ()=>void;
 }) {
+  const wrongNetwork = !!(wallet && TARGET_CHAIN_ID && chainId && chainId !== TARGET_CHAIN_ID);
   if (wallet) {
     return (
-      <div style={{display:"flex",alignItems:"center",gap:10,padding:"8px 14px",borderRadius:10,background:"rgba(52,211,153,0.07)",border:"1px solid rgba(52,211,153,0.22)",marginBottom:16,flexShrink:0}}>
-        <div style={{width:7,height:7,borderRadius:"50%",background:"#34d399",flexShrink:0}}/>
-        <span style={{fontFamily:"'DM Mono',monospace",fontSize:10,color:"#34d399",letterSpacing:"0.1em",flex:1}}>{short(wallet)}</span>
-        {chainId && <span style={{fontFamily:"'DM Mono',monospace",fontSize:9,color:"rgba(52,211,153,0.55)",letterSpacing:"0.08em"}}>{chainName(chainId)}</span>}
+      <div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:16,flexShrink:0}}>
+        <div style={{
+          display:"flex",alignItems:"center",gap:10,padding:"8px 14px",borderRadius:10,
+          background: wrongNetwork ? "rgba(248,113,113,0.07)" : "rgba(52,211,153,0.07)",
+          border: wrongNetwork ? "1px solid rgba(248,113,113,0.22)" : "1px solid rgba(52,211,153,0.22)",
+        }}>
+          <div style={{width:7,height:7,borderRadius:"50%",background: wrongNetwork ? "#f87171" : "#34d399",flexShrink:0}}/>
+          <span style={{fontFamily:"'DM Mono',monospace",fontSize:10,color: wrongNetwork ? "#f87171" : "#34d399",letterSpacing:"0.1em",flex:1}}>{short(wallet)}</span>
+          {chainId && <span style={{fontFamily:"'DM Mono',monospace",fontSize:9,color: wrongNetwork ? "rgba(248,113,113,0.65)" : "rgba(52,211,153,0.55)",letterSpacing:"0.08em"}}>{chainName(chainId)}</span>}
+        </div>
+        {wrongNetwork && (
+          <Btn gold onClick={onConnect} disabled={connecting} full style={{gap:8}}>
+            {connecting ? "Switching…" : `Switch to ${TARGET_CHAIN_LABEL}`}
+          </Btn>
+        )}
       </div>
     );
   }
@@ -196,7 +273,22 @@ function RecordTab({ wallet, signer, chainId, connecting, installed, onConnect }
   const reset=()=>{setStep("idle");setVideoURL(null);setHash(null);setTxHash(null);setSignErr("");setProgress(0);setTxBlock(null);setTxTs(null);setTxNet("");setUploading(false);setUploadErr("");setVideoStored(false);};
 
   const sign = async () => {
-    if (!signer || !wallet || !hash) return;
+    if (!wallet || !hash) return;
+    const eip = getMetaMaskProvider();
+    if (!eip) { setSignErr("MetaMask not detected."); setStep("error"); return; }
+
+    const chainResult = await ensureTargetChain(eip);
+    if (!chainResult.ok) { setSignErr(chainResult.message); setStep("error"); return; }
+
+    let activeSigner: ethers.JsonRpcSigner;
+    try {
+      activeSigner = (await refreshWalletState(eip)).signer;
+    } catch {
+      setSignErr("Could not read your wallet. Reconnect MetaMask and try again.");
+      setStep("error");
+      return;
+    }
+
     // Resolve contract address: use build-time env first, fall back to backend /api/info
     let contractAddr = CONTRACT_ADDRESS;
     if (!contractAddr) {
@@ -212,7 +304,7 @@ function RecordTab({ wallet, signer, chainId, connecting, installed, onConnect }
     // Animate progress while waiting for MetaMask + block confirmation
     const iv = setInterval(()=>setProgress(p=>p<82?p+0.6:p),60);
     try {
-      const contract = new ethers.Contract(contractAddr, HashmarkABI, signer);
+      const contract = new ethers.Contract(contractAddr, HashmarkABI, activeSigner);
       const tx = await contract.authenticateVideo(hash);
       setProgress(88);
       const receipt = await tx.wait();
@@ -220,7 +312,7 @@ function RecordTab({ wallet, signer, chainId, connecting, installed, onConnect }
       setProgress(100);
       setTxHash(receipt.hash);
       // Fetch real block timestamp
-      const provider = signer.provider!;
+      const provider = activeSigner.provider!;
       const block = await provider.getBlock(receipt.blockNumber);
       setTxBlock(receipt.blockNumber);
       setTxTs(block ? Number(block.timestamp) : Math.floor(Date.now()/1000));
@@ -233,7 +325,9 @@ function RecordTab({ wallet, signer, chainId, connecting, installed, onConnect }
       const raw = (err as {reason?:string;message?:string}).reason || (err as {message?:string}).message || "Transaction failed";
       let msg = raw;
       if (raw.includes("Failed to fetch") || raw.includes("could not coalesce") || raw.includes("UNKNOWN_ERROR")) {
-        msg = "Cannot reach the blockchain RPC. Please switch your wallet to a supported network (e.g. Sepolia or Ethereum Mainnet).";
+        msg = TARGET_CHAIN_ID
+          ? `Cannot reach the ${TARGET_CHAIN_LABEL} RPC. Open MetaMask, switch to ${TARGET_CHAIN_LABEL}${TARGET_RPC_URL ? ` (RPC: ${TARGET_RPC_URL})` : ""}, then try again.`
+          : "Cannot reach the blockchain RPC. Switch MetaMask to a supported network and try again.";
       } else if (raw.includes("already authenticated")) {
         msg = "This video is already authenticated on-chain.";
       }
@@ -671,10 +765,20 @@ export default function HashmarkApp() {
     if (!evts?.on) return;
     const onAccounts = (accs: unknown) => {
       const accounts = accs as string[];
-      if (!accounts[0]) { setWallet(null); setSigner(null); setChainId(null); }
-      else setWallet(accounts[0]);
+      if (!accounts[0]) { setWallet(null); setSigner(null); setChainId(null); return; }
+      refreshWalletState(eip)
+        .then(({ signer: s, wallet: w, chainId: cid }) => {
+          setWallet(w); setSigner(s); setChainId(cid);
+        })
+        .catch(() => setWallet(accounts[0]));
     };
-    const onChain = (cid: unknown) => setChainId(parseInt(cid as string, 16));
+    const onChain = () => {
+      refreshWalletState(eip)
+        .then(({ signer: s, wallet: w, chainId: cid }) => {
+          setWallet(w); setSigner(s); setChainId(cid);
+        })
+        .catch(() => {});
+    };
     evts.on("accountsChanged", onAccounts);
     evts.on("chainChanged", onChain);
     return () => { evts.removeListener("accountsChanged", onAccounts); evts.removeListener("chainChanged", onChain); };
@@ -690,47 +794,16 @@ export default function HashmarkApp() {
       // 1. Request accounts first
       await eth.request({ method: "eth_requestAccounts" });
 
-      // 2. Only switch/add chain when VITE_CHAIN_ID is explicitly configured.
-      //    Skipping this on deployments without env vars avoids sending MetaMask
-      //    to a local RPC (127.0.0.1:8545) that doesn't exist in production.
-      const configuredChainId = import.meta.env.VITE_CHAIN_ID;
-      if (configuredChainId) {
-        const targetChainId = parseInt(configuredChainId, 10);
-        const targetChainHex = "0x" + targetChainId.toString(16);
-        const rpcUrl = import.meta.env.VITE_RPC_URL as string | undefined;
+      // 2. Switch/add the configured chain before any on-chain action
+      const chainResult = await ensureTargetChain(eip);
+      if (!chainResult.ok) throw new Error(chainResult.message);
 
-        try {
-          await eth.request({ method: "wallet_switchEthereumChain", params: [{ chainId: targetChainHex }] });
-        } catch (switchErr: unknown) {
-          const code = (switchErr as { code?: number }).code;
-          // 4902 = chain not added to MetaMask — only add if we have an RPC URL
-          if (code === 4902 && rpcUrl) {
-            const isLocal = targetChainId === 1337 || targetChainId === 31337;
-            await eth.request({
-              method: "wallet_addEthereumChain",
-              params: [{
-                chainId: targetChainHex,
-                chainName: isLocal ? "Hashmark Local (Anvil)" : `Chain ${targetChainId}`,
-                rpcUrls: [rpcUrl],
-                nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
-                blockExplorerUrls: null,
-              }],
-            });
-          }
-          // If user rejected or no RPC URL, continue with current network
-        }
-      }
-
-      const provider = new ethers.BrowserProvider(eip);
-      const s = await provider.getSigner();
-      const addr = await s.getAddress();
-      const net = await provider.getNetwork();
+      const { signer: s, wallet: addr, chainId: cid } = await refreshWalletState(eip);
       setWallet(addr);
       setSigner(s);
-      setChainId(Number(net.chainId));
+      setChainId(cid);
 
       // Auto-fund wallet on local networks (Anvil/Hardhat) so transactions don't fail
-      const cid = Number(net.chainId);
       if (cid === 1337 || cid === 31337) {
         fetch("/api/faucet", {
           method: "POST",
@@ -738,7 +811,10 @@ export default function HashmarkApp() {
           body: JSON.stringify({ address: addr }),
         }).catch(() => {});
       }
-    } catch { /* user rejected */ }
+    } catch (err: unknown) {
+      const msg = (err as Error).message;
+      if (msg && !msg.includes("rejected")) console.warn("[wallet]", msg);
+    }
     finally { setConn(false); }
   };
 

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { ethers } from "ethers";
 import ABI from "../abi/Hashmark.json";
@@ -14,7 +14,8 @@ type Stage = "idle" | "generating" | "verifying" | "anchoring" | "done" | "error
 
 const AGENT_IDENTITY = "Hashmark Insight Engine v1";
 
-const extractDateRange = (input: string) => {
+const 
+extractDateRange = (input: string) => {
   const years = Array.from(input.matchAll(/\b(19|20)\d{2}\b/g))
     .map((match) => Number(match[0]))
     .filter((year) => Number.isFinite(year));
@@ -36,7 +37,6 @@ export default function Data360Passport() {
 
   const [contractAddress, setContractAddress] = useState(ENV_CONTRACT_ADDRESS);
   const [question, setQuestion] = useState("");
-  const [questionCategory, setQuestionCategory] = useState("");
   const [indicator, setIndicator] = useState("");
   const [country, setCountry] = useState("");
   const [date, setDate] = useState("");
@@ -55,6 +55,8 @@ export default function Data360Passport() {
   const [tamperResult, setTamperResult] = useState<{ status: "idle" | "match" | "mismatch" | "error"; message?: string }>(
     { status: "idle" },
   );
+  const [tamperLoading, setTamperLoading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [anchorTx, setAnchorTx] = useState<{
     txHash: string;
     blockNumber: number;
@@ -90,6 +92,15 @@ export default function Data360Passport() {
     const message = (err as Error)?.message || "Unexpected error.";
     if (message.includes("Failed to fetch")) {
       return "Backend not reachable. Start the Hashmark backend on http://localhost:4000.";
+    }
+    if (message.includes("Failed to resolve Data360 indicator")) {
+      return "Indicator not found in Data360. Check the indicator code and try again.";
+    }
+    if (message.includes("Data360 database ID is required")) {
+      return "This indicator requires a database ID. Try a different indicator.";
+    }
+    if (message.includes("No data returned")) {
+      return "No data available for this indicator and country combination.";
     }
     return message;
   };
@@ -170,7 +181,6 @@ export default function Data360Passport() {
       return;
     }
     
-    setQuestionCategory(derivedCategory);
     handleGenerate({
       indicator: derivedIndicator,
       country: derivedCountry,
@@ -241,7 +251,6 @@ export default function Data360Passport() {
         const countryLabel = result.passport.data360.country.name || result.passport.data360.query.country;
         const generatedQuestion = `Show ${indicatorName} in ${countryLabel}.`;
         setQuestion(generatedQuestion);
-        setQuestionCategory(indicatorName);
         requestContext = { question: generatedQuestion, category: indicatorName };
       }
       await buildDemoAssets(result.passport, requestContext);
@@ -323,10 +332,36 @@ export default function Data360Passport() {
     }
   };
 
-  const fileToDataUrl = (file: File) => new Promise<string>((resolve, reject) => {
+  const fileToDataUrl = (file: File): Promise<string> => new Promise((resolve, reject) => {
+    if (!file) {
+      reject(new Error("No file provided"));
+      return;
+    }
+    
     const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result));
-    reader.onerror = () => reject(new Error("Failed to read file."));
+    const timeout = setTimeout(() => {
+      reader.abort();
+      reject(new Error("File read timed out"));
+    }, 10000);
+    
+    reader.onload = () => {
+      clearTimeout(timeout);
+      const result = reader.result;
+      if (typeof result !== 'string') {
+        reject(new Error("Failed to read file as data URL"));
+        return;
+      }
+      resolve(result);
+    };
+    reader.onerror = () => {
+      clearTimeout(timeout);
+      reject(new Error(`Failed to read file: ${reader.error?.message || 'Unknown error'}`));
+    };
+    reader.onabort = () => {
+      clearTimeout(timeout);
+      reject(new Error("File read was aborted"));
+    };
+    
     reader.readAsDataURL(file);
   });
 
@@ -351,31 +386,135 @@ export default function Data360Passport() {
     });
   };
 
+  const compareImages = async (img1DataUrl: string, img2DataUrl: string): Promise<boolean> => {
+    if (!img1DataUrl || !img2DataUrl) {
+      throw new Error("Invalid image data URLs for comparison");
+    }
+
+    const img1 = await loadImage(img1DataUrl);
+    const img2 = await loadImage(img2DataUrl);
+    
+    const canvas1 = document.createElement('canvas');
+    const canvas2 = document.createElement('canvas');
+    canvas1.width = img1.width;
+    canvas1.height = img1.height;
+    canvas2.width = img2.width;
+    canvas2.height = img2.height;
+    
+    const ctx1 = canvas1.getContext('2d');
+    const ctx2 = canvas2.getContext('2d');
+    if (!ctx1 || !ctx2) throw new Error("Failed to get canvas context for comparison");
+    
+    ctx1.drawImage(img1, 0, 0);
+    ctx2.drawImage(img2, 0, 0);
+    
+    const data1 = ctx1.getImageData(0, 0, canvas1.width, canvas1.height).data;
+    const data2 = ctx2.getImageData(0, 0, canvas2.width, canvas2.height).data;
+    
+    // If dimensions differ significantly, it's a different image
+    if (data1.length !== data2.length) {
+      console.warn(`[Image comparison] Dimension mismatch: ${data1.length} vs ${data2.length} bytes`);
+      return false;
+    }
+    
+    let pixelCount = 0;
+    let differentPixels = 0;
+    
+    // Compare pixel data (RGB only, skip alpha)
+    for (let i = 0; i < data1.length; i += 4) {
+      const r1 = data1[i];
+      const g1 = data1[i + 1];
+      const b1 = data1[i + 2];
+      
+      const r2 = data2[i];
+      const g2 = data2[i + 1];
+      const b2 = data2[i + 2];
+      
+      // If any RGB channel differs by more than 15 (out of 255), mark as different pixel
+      if (Math.abs(r1 - r2) > 15 || Math.abs(g1 - g2) > 15 || Math.abs(b1 - b2) > 15) {
+        differentPixels++;
+      }
+      pixelCount++;
+    }
+    
+    // Calculate percentage of different pixels
+    const diffPercentage = (differentPixels / pixelCount) * 100;
+    console.log(`[Image comparison] Different pixels: ${differentPixels}/${pixelCount} (${diffPercentage.toFixed(2)}%)`);
+    
+    // Allow up to 2% pixel difference (e.g., due to compression, rendering differences)
+    const isMatch = diffPercentage < 2;
+    return isMatch;
+  };
+
+  const loadImage = (src: string): Promise<HTMLImageElement> => {
+    return new Promise((resolve, reject) => {
+      if (!src) {
+        reject(new Error("No image source provided"));
+        return;
+      }
+
+      const img = new Image();
+      const timeout = setTimeout(() => {
+        img.src = "";
+        reject(new Error("Image load timed out"));
+      }, 10000);
+
+      img.onload = () => {
+        clearTimeout(timeout);
+        resolve(img);
+      };
+      img.onerror = () => {
+        clearTimeout(timeout);
+        reject(new Error("Failed to load image. Make sure the file is a valid image format."));
+      };
+      
+      img.src = src;
+    });
+  };
+
   const handleTamperUpload = async (file: File | null) => {
-    if (!file || !factPayload || !factHash) return;
+    if (!file) {
+      setTamperResult({ status: "error", message: "No file selected." });
+      return;
+    }
+    if (!factPayload || !factHash) {
+      setTamperResult({ status: "error", message: "Generate a passport first before testing." });
+      return;
+    }
+
+    setTamperLoading(true);
     try {
-      const dataUrl = await fileToDataUrl(file);
-      const { hash } = await buildFactDNA({
-        issuedAt: factPayload.issuedAt,
-        dataHash: factPayload.dataHash,
-        query: factPayload.query,
-        request: factPayload.request,
-        source: factPayload.source,
-        creator: factPayload.provenance.creator,
-        agent: factPayload.provenance.agent,
-        generatedAt: factPayload.provenance.generatedAt,
-        summary: factPayload.insight.summary,
-        chartDataUrl: dataUrl,
-      });
+      console.log("[Tamper Test] Starting tamper analysis...");
+      
+      const uploadedDataUrl = await fileToDataUrl(file);
+      console.log("[Tamper Test] File loaded successfully, size:", uploadedDataUrl.length);
+      
+      const originalChartDataUrl = factPayload.insight.chartDataUrl;
+      if (!originalChartDataUrl) {
+        throw new Error("Original chart data not found in passport");
+      }
+      console.log("[Tamper Test] Original chart loaded, size:", originalChartDataUrl.length);
+      
+      const imagesMatch = await compareImages(originalChartDataUrl, uploadedDataUrl);
+      console.log("[Tamper Test] Comparison result:", imagesMatch ? "MATCH" : "MISMATCH");
+      
       setTamperResult({
-        status: hash === factHash ? "match" : "mismatch",
-        message: hash === factHash ? "PROVENANCE INTACT" : "PROVENANCE BROKEN",
+        status: imagesMatch ? "match" : "mismatch",
+        message: imagesMatch ? "✅ PROVENANCE INTACT" : "⚠️ PROVENANCE BROKEN",
       });
     } catch (err: unknown) {
+      const errorMsg = (err as Error).message || "Tamper check failed.";
+      console.error("[Tamper Test] Error:", err);
       setTamperResult({
         status: "error",
-        message: (err as Error).message || "Tamper check failed.",
+        message: errorMsg,
       });
+    } finally {
+      setTamperLoading(false);
+      // Reset file input so same file can be uploaded again
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
     }
   };
 
@@ -515,15 +654,20 @@ export default function Data360Passport() {
               </button>
             ) : (
               <div style={{ display: "flex", flexWrap: "wrap", gap: 12, alignItems: "center" }}>
-                <button className="btn btn-primary" onClick={handleAnchor} disabled={busy || !factHash}>
-                  {stage === "anchoring" ? "Publishing…" : "Register provenance"}
+                <button 
+                  className="btn btn-primary" 
+                  onClick={handleAnchor} 
+                  disabled={busy || !factHash || !!anchorTx}
+                  title={anchorTx ? "Provenance already published on blockchain" : ""}
+                >
+                  {stage === "anchoring" ? "Publishing…" : anchorTx ? "✅ Published" : "Register provenance"}
                 </button>
                 <span style={{ fontSize: 12, opacity: 0.6 }}>{wallet.chainName}</span>
               </div>
             )}
             {anchorTx && (
-              <div style={{ marginTop: 12, fontSize: 12, opacity: 0.7 }}>
-                Timestamped in block {anchorTx.blockNumber} · Tx {anchorTx.txHash.slice(0, 10)}…{anchorTx.txHash.slice(-8)}
+              <div style={{ marginTop: 12, fontSize: 12, opacity: 0.7, padding: "8px 12px", backgroundColor: "rgba(74, 222, 128, 0.1)", borderRadius: "4px" }}>
+                ✅ Timestamped in block {anchorTx.blockNumber} · Tx {anchorTx.txHash.slice(0, 10)}…{anchorTx.txHash.slice(-8)}
               </div>
             )}
 
@@ -592,14 +736,29 @@ export default function Data360Passport() {
             <p style={{ fontSize: 12, opacity: 0.6, marginBottom: 12 }}>
               Alter the chart (crop attribution, edit values, manipulate percentages) and upload it to see provenance break instantly.
             </p>
-            <input
-              type="file"
-              accept="image/*"
-              onChange={(e) => handleTamperUpload(e.target.files?.[0] ?? null)}
-              style={{ fontSize: 12 }}
-            />
+            <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*"
+                onChange={(e) => handleTamperUpload(e.target.files?.[0] ?? null)}
+                style={{ fontSize: 12 }}
+                disabled={tamperLoading}
+              />
+              {tamperLoading && (
+                <span style={{ fontSize: 12, color: "#9aa4b2" }}>Analyzing...</span>
+              )}
+            </div>
             {tamperResult.status !== "idle" && (
-              <div style={{ marginTop: 12, fontSize: 13, fontWeight: 600, color: tamperResult.status === "match" ? "#4ade80" : "#f87171" }}>
+              <div style={{ 
+                marginTop: 12, 
+                fontSize: 13, 
+                fontWeight: 600, 
+                color: tamperResult.status === "match" ? "#4ade80" : "#f87171",
+                padding: "8px 12px",
+                backgroundColor: tamperResult.status === "match" ? "rgba(74, 222, 128, 0.1)" : "rgba(248, 113, 113, 0.1)",
+                borderRadius: "4px"
+              }}>
                 {tamperResult.message}
               </div>
             )}

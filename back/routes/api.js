@@ -329,6 +329,7 @@ async function buildData360Passport({ indicator, country, date, limit, database,
   try {
     resolved = await resolveData360Indicator(indicatorInput);
   } catch (err) {
+    console.error("[buildData360Passport] Failed to resolve indicator:", indicatorInput, err);
     if (err?.status) throw err;
     throw createHttpError(502, err?.message || "Failed to resolve Data360 indicator.");
   }
@@ -336,6 +337,7 @@ async function buildData360Passport({ indicator, country, date, limit, database,
   const indicatorId = resolved.indicatorId;
   const databaseId = databaseInput || resolved.databaseId;
   if (!databaseId) {
+    console.error("[buildData360Passport] Missing database ID for indicator:", indicatorInput, resolved);
     throw createHttpError(400, "Data360 database ID is required for this indicator.");
   }
 
