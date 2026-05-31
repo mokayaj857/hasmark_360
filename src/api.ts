@@ -259,3 +259,25 @@ export async function verifyData360Passport(hash: string, options?: Data360Verif
   const res = await fetch(`${BASE}/data360/verify/${encodeURIComponent(hash)}${query ? `?${query}` : ""}`);
   return handleResponse<Data360VerifyResponse>(res);
 }
+
+export interface Data360IndicatorResult {
+  id: string;
+  name: string;
+  databaseId: string;
+  unit: string;
+  alternateIds: string[];
+}
+
+export interface Data360SearchResponse {
+  results: Data360IndicatorResult[];
+  total: number;
+}
+
+/** Search for Data360 indicators by natural language query. */
+export async function searchData360(query: string, top = 10): Promise<Data360SearchResponse> {
+  const params = new URLSearchParams();
+  params.set("q", query);
+  params.set("top", String(top));
+  const res = await fetch(`${BASE}/data360/search?${params.toString()}`);
+  return handleResponse<Data360SearchResponse>(res);
+}

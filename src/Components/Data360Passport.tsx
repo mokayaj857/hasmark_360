@@ -14,76 +14,6 @@ type Stage = "idle" | "generating" | "verifying" | "anchoring" | "done" | "error
 
 const AGENT_IDENTITY = "Hashmark Insight Engine v1";
 
-const QUESTION_ROUTES = [
-  {
-    indicator: "WB_WDI_SL_UEM_1524_NE_ZS",
-    category: "Youth unemployment",
-    keywords: ["youth unemployment", "young unemployment", "youth jobless", "ages 15-24", "youth labor"],
-  },
-  {
-    indicator: "WB_WDI_SL_UEM_TOTL_ZS",
-    category: "Unemployment",
-    keywords: ["unemployment", "jobless", "employment rate", "labor market"],
-  },
-  {
-    indicator: "WB_WDI_SI_POV_DDAY",
-    category: "Extreme poverty",
-    keywords: ["poverty", "extreme poverty", "poverty rate", "income poverty"],
-  },
-  {
-    indicator: "WB_WDI_SG_GEN_PARL_ZS",
-    category: "Gender equality",
-    keywords: ["gender equality", "women in parliament", "gender parity", "women representation"],
-  },
-  {
-    indicator: "WB_WDI_SL_TLF_CACT_FE_ZS",
-    category: "Female labor participation",
-    keywords: ["female labor participation", "women workforce", "female workforce", "women labor"],
-  },
-  {
-    indicator: "WB_WDI_EN_ATM_CO2E_PC",
-    category: "Climate emissions",
-    keywords: ["climate", "co2", "carbon", "emissions", "greenhouse"],
-  },
-  {
-    indicator: "WB_WDI_SH_XPD_CHEX_GD_ZS",
-    category: "Healthcare spending",
-    keywords: ["healthcare spending", "health expenditure", "health spending"],
-  },
-  {
-    indicator: "WB_WDI_SE_SEC_ENRR",
-    category: "Education access",
-    keywords: ["education", "school enrollment", "secondary education", "student enrollment"],
-  },
-  {
-    indicator: "WB_WDI_EG_ELC_ACCS_ZS",
-    category: "Infrastructure access",
-    keywords: ["electricity", "power access", "energy access", "infrastructure"],
-  },
-  {
-    indicator: "WB_WDI_SH_H2O_BASW_ZS",
-    category: "Clean water access",
-    keywords: ["clean water", "drinking water", "water access"],
-  },
-  {
-    indicator: "WB_WDI_NY_GDP_PCAP_CD",
-    category: "Economic output",
-    keywords: ["gdp per capita", "income per person", "economic output", "gdp"],
-  },
-  {
-    indicator: "WB_WDI_SP_DYN_LE00_IN",
-    category: "Healthcare outcomes",
-    keywords: ["life expectancy", "healthcare outcomes", "health outcomes"],
-  },
-];
-
-const resolveQuestionRoute = (input: string) => {
-  const normalized = input.toLowerCase();
-  return QUESTION_ROUTES.find((route) =>
-    route.keywords.some((keyword) => normalized.includes(keyword)),
-  );
-};
-
 const extractDateRange = (input: string) => {
   const years = Array.from(input.matchAll(/\b(19|20)\d{2}\b/g))
     .map((match) => Number(match[0]))
@@ -186,7 +116,8 @@ export default function Data360Passport() {
     });
     const chartTitle = `${indicatorLabel} · ${countryLabel}`;
     const chartSvgMarkup = buildChartSvg(normalized, chartTitle, unitLabel);
-    const chartUrl = buildChartDataUrl(chartSvgMarkup);
+    const chartSvgUrl = buildChartDataUrl(chartSvgMarkup);
+    const chartPngUrl = await svgToPngDataUrl(chartSvgUrl);
     const requestQuestion = request?.question?.trim() || `Show ${indicatorLabel} in ${countryLabel}.`;
     const requestCategory = request?.category || indicatorLabel || "Development indicator";
     const { payload, hash } = await buildFactDNA({
@@ -214,25 +145,24 @@ export default function Data360Passport() {
       creator: wallet.address ?? "Anonymous researcher",
       agent: AGENT_IDENTITY,
       summary: summaryText,
-      chartDataUrl: chartUrl,
+      chartDataUrl: chartPngUrl,
     });
 
     setSummary(summaryText);
-    setChartDataUrl(chartUrl);
+    setChartDataUrl(chartSvgUrl);
     setFactPayload(payload);
     setFactHash(hash);
     await loadFactProof(hash);
   }, [loadFactProof, wallet.address]);
 
   const handleAskQuestion = () => {
-    const route = resolveQuestionRoute(question);
-    const derivedIndicator = route?.indicator ?? indicator.trim();
-    const derivedCategory = route?.category ?? "Development indicator";
+    const derivedIndicator = indicator.trim();
+    const derivedCategory = question.trim() || "Development indicator";
     const derivedDate = extractDateRange(question) ?? date.trim();
     const derivedCountry = country.trim();
     
     if (!derivedIndicator) {
-      setError("Please enter a question or specify an indicator.");
+      setError("Please enter a Data360 indicator code.");
       return;
     }
     if (!derivedCountry) {
@@ -400,6 +330,27 @@ export default function Data360Passport() {
     reader.readAsDataURL(file);
   });
 
+  const svgToPngDataUrl = (svgDataUrl: string): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = 720;
+        canvas.height = 360;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          reject(new Error('Failed to get canvas context'));
+          return;
+        }
+        ctx.drawImage(img, 0, 0);
+        const pngDataUrl = canvas.toDataURL('image/png');
+        resolve(pngDataUrl);
+      };
+      img.onerror = () => reject(new Error('Failed to load SVG'));
+      img.src = svgDataUrl;
+    });
+  };
+
   const handleTamperUpload = async (file: File | null) => {
     if (!file || !factPayload || !factHash) return;
     try {
@@ -451,17 +402,17 @@ export default function Data360Passport() {
         <div className="tech-card" style={{ marginBottom: 20 }}>
           <h3 style={{ marginBottom: 12, fontSize: 15 }}>1 · Intelligence request</h3>
           <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            <span style={{ fontSize: 11, opacity: 0.6 }}>Question</span>
+            <span style={{ fontSize: 11, opacity: 0.6 }}>Indicator</span>
             <input
               type="text"
-              value={question}
-              onChange={(e) => setQuestion(e.target.value)}
-              placeholder="e.g., Show youth unemployment trends in Kenya."
+              value={indicator}
+              onChange={(e) => setIndicator(e.target.value)}
+              placeholder=""
               style={{ padding: "10px 12px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--surface)", color: "var(--text)" }}
             />
           </label>
           <label style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 12 }}>
-            <span style={{ fontSize: 11, opacity: 0.6 }}>Country (name or ISO3)</span>
+            <span style={{ fontSize: 11, opacity: 0.6 }}>Country (name or ISO3, required)</span>
             <input
               type="text"
               value={country}
@@ -470,11 +421,31 @@ export default function Data360Passport() {
               style={{ padding: "10px 12px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--surface)", color: "var(--text)" }}
             />
           </label>
+          <label style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 12 }}>
+            <span style={{ fontSize: 11, opacity: 0.6 }}>Date range (optional, e.g., 2012:2022)</span>
+            <input
+              type="text"
+              value={date}
+              onChange={(e) => setDate(e.target.value)}
+              placeholder="2012:2022"
+              style={{ padding: "10px 12px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--surface)", color: "var(--text)" }}
+            />
+          </label>
+          <label style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 12 }}>
+            <span style={{ fontSize: 11, opacity: 0.6 }}>Limit (optional, default 10)</span>
+            <input
+              type="number"
+              value={limit}
+              onChange={(e) => setLimit(Number(e.target.value))}
+              placeholder="10"
+              style={{ padding: "10px 12px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--surface)", color: "var(--text)" }}
+            />
+          </label>
           <button className="btn btn-primary" style={{ marginTop: 16, width: "100%" }} onClick={handleAskQuestion} disabled={busy}>
             {stage === "generating" ? "Fetching evidence…" : "Fetch official evidence"}
           </button>
           <p style={{ fontSize: 12, opacity: 0.6, marginTop: 10 }}>
-            Mapped to World Bank Data360 · Topic {questionCategory} · Indicator {indicator} · {country} · {date || "latest"}
+            World Bank Data360 · {indicator ? `Indicator ${indicator}` : "Search or enter indicator"} · {country || "—"} · {date || "latest"} · Limit: {limit}
           </p>
         </div>
 

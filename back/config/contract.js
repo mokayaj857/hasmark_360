@@ -26,15 +26,39 @@ function getContractSetup() {
     console.warn("[contract] CONTRACT_ADDRESS not set — on-chain calls will fail.");
   }
 
-  _provider = new ethers.JsonRpcProvider(rpcUrl);
+  try {
+    // Configure provider with timeout and retry settings
+    _provider = new ethers.JsonRpcProvider(rpcUrl, undefined, {
+      staticNetwork: true,
+      batchStallTime: 10,
+    });
+    
+    // Set timeout on provider
+    _provider._getConnection().timeout = 30000; // 30 second timeout
 
-  if (privateKey) {
-    _signer   = new ethers.Wallet(privateKey, _provider);
-    _contract = new ethers.Contract(contractAddress, abi, _signer);
-    console.log(`[contract] Using signer wallet: ${_signer.address}`);
-  } else {
+    console.log(`[contract] Connecting to RPC: ${rpcUrl}`);
+  } catch (err) {
+    console.error("[contract] Failed to initialize provider:", err.message);
+    // Fallback to null provider - operations will fail gracefully
+    _provider = null;
+  }
+
+  if (privateKey && _provider) {
+    try {
+      _signer   = new ethers.Wallet(privateKey, _provider);
+      _contract = new ethers.Contract(contractAddress, abi, _signer);
+      console.log(`[contract] Using signer wallet: ${_signer.address}`);
+    } catch (err) {
+      console.error("[contract] Failed to initialize signer:", err.message);
+      _signer = null;
+      _contract = new ethers.Contract(contractAddress, abi, _provider);
+    }
+  } else if (_provider) {
     _contract = new ethers.Contract(contractAddress, abi, _provider);
     console.log("[contract] Read-only mode (no PRIVATE_KEY). Authenticate requires client wallet.");
+  } else {
+    _contract = null;
+    console.warn("[contract] Provider unavailable - on-chain features disabled");
   }
 
   return { provider: _provider, contract: _contract, signer: _signer };

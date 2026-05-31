@@ -312,9 +312,6 @@ async function buildData360Passport({ indicator, country, date, limit, database,
   const dateRange = typeof date === "string" ? date.trim() : "";
   const databaseInput = typeof database === "string" ? database.trim().toUpperCase() : "";
 
-  if (!/^[A-Za-z0-9._-]+$/.test(indicatorInput)) {
-    throw createHttpError(400, "Indicator contains invalid characters.");
-  }
   if (databaseInput && !/^[A-Za-z0-9_]+$/.test(databaseInput)) {
     throw createHttpError(400, "Database contains invalid characters.");
   }
@@ -624,7 +621,7 @@ router.post("/authenticate", express.json(), async (req, res) => {
 
   const { contract, signer } = getContractSetup();
 
-  if (!signer) {
+  if (!contract || !signer) {
     return res.status(503).json({
       error: "Server wallet not configured (PRIVATE_KEY missing). Sign the transaction from your client wallet.",
       clientSigning: true,
@@ -667,6 +664,10 @@ router.get("/verify/:hash", async (req, res) => {
   }
 
   const { contract } = getContractSetup();
+
+  if (!contract) {
+    return res.status(503).json({ error: "Blockchain provider unavailable. Check RPC_URL configuration." });
+  }
 
   try {
     const [creator, timestamp] = await contract.verifyVideo(hash);
@@ -808,15 +809,17 @@ router.get("/data360/verify/:hash", async (req, res) => {
 
     let chain = null;
     const { contract } = getContractSetup();
-    try {
-      const [creator, timestamp] = await contract.verifyVideo(hash);
-      chain = { authenticated: true, creator, timestamp: Number(timestamp) };
-    } catch (err) {
-      if (err?.reason?.includes("Not authenticated") || err?.message?.includes("Not authenticated")) {
-        chain = { authenticated: false };
-      } else {
-        console.error("[data360/verify]", err);
-        return res.status(500).json({ error: "On-chain verification failed.", detail: err.reason || err.message });
+    if (contract) {
+      try {
+        const [creator, timestamp] = await contract.verifyVideo(hash);
+        chain = { authenticated: true, creator, timestamp: Number(timestamp) };
+      } catch (err) {
+        if (err?.reason?.includes("Not authenticated") || err?.message?.includes("Not authenticated")) {
+          chain = { authenticated: false };
+        } else {
+          console.error("[data360/verify]", err);
+          return res.status(500).json({ error: "On-chain verification failed.", detail: err.reason || err.message });
+        }
       }
     }
 
@@ -837,12 +840,61 @@ router.get("/data360/verify/:hash", async (req, res) => {
 });
 
 /* ─────────────────────────────────────────────────────────────────────────────
+   GET /api/data360/search
+   Search for Data360 indicators by natural language query.
+   Query params: q (search query), top (number of results, default 10)
+──────────────────────────────────────────────────────────────────────────── */
+router.get("/data360/search", async (req, res) => {
+  const query = req.query.q?.trim();
+  const top = Math.min(Math.max(Number(req.query.top) || 10, 1), 50);
+
+  if (!query) {
+    return res.status(400).json({ error: "Query parameter 'q' is required." });
+  }
+
+  try {
+    const search = await postData360("data360/searchv2", { search: query, top });
+    const results = Array.isArray(search?.value) ? search.value : [];
+
+    const formatted = results.map((item) => {
+      const sd = item?.series_description || {};
+      return {
+        id: sd.idno || "",
+        name: sd.name || "",
+        databaseId: sd.database_id || "",
+        unit: sd.measurement_unit || "",
+        alternateIds: Array.isArray(sd.alternate_identifiers)
+          ? sd.alternate_identifiers.map((alt) => alt?.identifier || "").filter(Boolean)
+          : [],
+      };
+    });
+
+    res.json({ results: formatted, total: formatted.length });
+  } catch (err) {
+    console.error("[data360/search]", err);
+    const status = err.status || 500;
+    const message = err.message || "Data360 search failed.";
+    res.status(status).json({ error: message });
+  }
+});
+
+/* ─────────────────────────────────────────────────────────────────────────────
    GET /api/stats
    Live on-chain stats: total proofs authenticated + 5 most-recent proofs.
    Returns zeros gracefully when the node is unreachable.
 ───────────────────────────────────────────────────────────────────────────── */
 router.get("/stats", async (_req, res) => {
   const { contract, provider } = getContractSetup();
+  
+  if (!provider) {
+    return res.json({
+      totalProofs: 0,
+      recentProofs: [],
+      blockNumber: 0,
+      offline: true,
+    });
+  }
+
   try {
     const blockNumber = await provider.getBlockNumber();
     const fromBlock   = Math.max(0, blockNumber - 9_900);
@@ -874,6 +926,16 @@ router.get("/stats", async (_req, res) => {
 router.get("/recent", async (req, res) => {
   const limit = Math.min(Number(req.query.limit) || 20, 100);
   const { contract, provider } = getContractSetup();
+  
+  if (!provider) {
+    return res.json({
+      proofs: [],
+      total: 0,
+      blockNumber: 0,
+      offline: true,
+    });
+  }
+
   try {
     const blockNumber = await provider.getBlockNumber();
     const fromBlock   = Math.max(0, blockNumber - 9_900);
