@@ -11,14 +11,6 @@ const ENV_CONTRACT_ADDRESS = (_raw_addr.match(/0x[0-9a-fA-F]{40}/) || [""])[0];
 
 type Stage = "idle" | "generating" | "verifying" | "anchoring" | "done" | "error";
 
-const DEMO = {
-  question: "Show youth unemployment trends in Kenya.",
-  indicator: "WB_WDI_SL_UEM_1524_NE_ZS",
-  country: "Kenya",
-  date: "2012:2022",
-  limit: 12,
-  category: "Youth unemployment",
-};
 
 const AGENT_IDENTITY = "Hashmark Insight Engine v1";
 
@@ -113,12 +105,12 @@ export default function Data360Passport() {
   const wallet = useWallet();
 
   const [contractAddress, setContractAddress] = useState(ENV_CONTRACT_ADDRESS);
-  const [question, setQuestion] = useState(DEMO.question);
-  const [questionCategory, setQuestionCategory] = useState(DEMO.category);
-  const [indicator, setIndicator] = useState(DEMO.indicator);
-  const [country, setCountry] = useState(DEMO.country);
-  const [date, setDate] = useState(DEMO.date);
-  const [limit, setLimit] = useState(DEMO.limit);
+  const [question, setQuestion] = useState("");
+  const [questionCategory, setQuestionCategory] = useState("");
+  const [indicator, setIndicator] = useState("");
+  const [country, setCountry] = useState("");
+  const [date, setDate] = useState("");
+  const [limit, setLimit] = useState(10);
 
   const [hashInput, setHashInput] = useState(searchParams.get("hash") ?? "");
   const [passport, setPassport] = useState<Data360Passport | null>(null);
@@ -234,10 +226,20 @@ export default function Data360Passport() {
 
   const handleAskQuestion = () => {
     const route = resolveQuestionRoute(question);
-    const derivedIndicator = route?.indicator ?? (indicator.trim() || DEMO.indicator);
+    const derivedIndicator = route?.indicator ?? indicator.trim();
     const derivedCategory = route?.category ?? "Development indicator";
-    const derivedDate = extractDateRange(question) ?? (date.trim() || DEMO.date);
-    const derivedCountry = country.trim() || DEMO.country;
+    const derivedDate = extractDateRange(question) ?? date.trim();
+    const derivedCountry = country.trim();
+    
+    if (!derivedIndicator) {
+      setError("Please enter a question or specify an indicator.");
+      return;
+    }
+    if (!derivedCountry) {
+      setError("Please enter a country.");
+      return;
+    }
+    
     setQuestionCategory(derivedCategory);
     handleGenerate({
       indicator: derivedIndicator,
@@ -454,7 +456,7 @@ export default function Data360Passport() {
               type="text"
               value={question}
               onChange={(e) => setQuestion(e.target.value)}
-              placeholder={DEMO.question}
+              placeholder="e.g., Show youth unemployment trends in Kenya."
               style={{ padding: "10px 12px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--surface)", color: "var(--text)" }}
             />
           </label>
